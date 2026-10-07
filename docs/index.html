@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Prior Auth RPA Dashboard</title>
+<style>
+/* ---------------------------------------------------------------- palette
+   Values are the validated reference palette. Light and dark are both
+   selected sets stepped for their own surface, not an automatic flip. */
+:root {
+  color-scheme: light;
+  --surface-1:  #fcfcfb;
+  --page:       #f9f9f7;
+  --ink:        #0b0b0b;
+  --ink-2:      #52514e;
+  --muted:      #898781;
+  --grid:       #e1e0d9;
+  --baseline:   #c3c2b7;
+  --border:     rgba(11,11,11,0.10);
+  --hover-wash: rgba(11,11,11,0.04);
+  --good:       #006300;
+  --bad:        #d03b3b;
+  --series-1:   #2a78d6;
+  --series-2:   #eb6834;
+  --series-3:   #1baf7a;
+  --deemph:     #c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1:  #1a1a19;
+    --page:       #0d0d0d;
+    --ink:        #ffffff;
+    --ink-2:      #c3c2b7;
+    --muted:      #898781;
+    --grid:       #2c2c2a;
+    --baseline:   #383835;
+    --border:     rgba(255,255,255,0.10);
+    --hover-wash: rgba(255,255,255,0.06);
+    --good:       #0ca30c;
+    --bad:        #d03b3b;
+    --series-1:   #3987e5;
+    --series-2:   #d95926;
+    --series-3:   #199e70;
+    --deemph:     #383835;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1:  #1a1a19;
+  --page:       #0d0d0d;
+  --ink:        #ffffff;
+  --ink-2:      #c3c2b7;
+  --muted:      #898781;
+  --grid:       #2c2c2a;
+  --baseline:   #383835;
+  --border:     rgba(255,255,255,0.10);
+  --hover-wash: rgba(255,255,255,0.06);
+  --good:       #0ca30c;
+  --bad:        #d03b3b;
+  --series-1:   #3987e5;
+  --series-2:   #d95926;
+  --series-3:   #199e70;
+  --deemph:     #383835;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--page);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+/* Palette vars live on :root, so background/color resolve on body and every
+   descendant inherits the right ink. */
+.viz-root { background: var(--page); color: var(--ink); min-height: 100vh; padding: 20px; }
+.wrap { max-width: 1180px; margin: 0 auto; }
+
+/* ---------------------------------------------------------------- header */
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 16px; margin-bottom: 16px; }
+.head h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.head .sub { font-size: 12.5px; color: var(--ink-2); }
+.head .spacer { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- filters
+   One row, above everything it scopes. Date range first. */
+.filters {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 10px 12px; margin-bottom: 18px;
+  background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.fgroup { display: flex; align-items: center; gap: 6px; }
+.flabel { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.presets { display: flex; flex-wrap: wrap; gap: 3px; }
+.preset {
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent; color: var(--ink-2);
+}
+.preset:hover { background: var(--hover-wash); }
+.preset[aria-pressed="true"] { background: var(--series-1); color: #fff; font-weight: 600; }
+.preset:focus-visible, select:focus-visible, input:focus-visible, .tbtn:focus-visible, .preset:focus-visible {
+  outline: 2px solid var(--series-1); outline-offset: 2px;
+}
+select, input[type="date"] {
+  font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--ink);
+}
+.vsep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
+.range-note { font-size: 12px; color: var(--muted); }
+
+/* ---------------------------------------------------------------- KPI row */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; margin-bottom: 7px; }
+.kpinote { font-size: 11.5px; color: var(--muted); margin: 0 0 18px; }
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px 12px;
+  display: flex; flex-direction: column; gap: 7px;
+}
+.tile .tlabel { font-size: 12.5px; color: var(--ink-2); line-height: 1.3; }
+.tile .tvalue { font-size: 31px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.tile.hero .tvalue { font-size: 48px; }
+.tile .trow { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+.tile .tdelta { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.tile .tdelta.up { color: var(--good); }
+.tile .tdelta.down { color: var(--bad); }
+.tile .tdenom { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.spark { display: block; }
+
+/* ---------------------------------------------------------------- cards */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px 10px; margin-bottom: 14px;
+}
+.card .chead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+.card h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.card .csub { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+.card .chead .spacer { flex: 1 1 auto; }
+.tbtn {
+  font: inherit; font-size: 11.5px; cursor: pointer; color: var(--ink-2);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px;
+}
+.tbtn:hover { background: var(--hover-wash); }
+.tbtn[aria-pressed="true"] { background: var(--hover-wash); font-weight: 600; color: var(--ink); }
+
+/* legend: always present for >=2 series. Mirrors the mark (rect/line). */
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 8px; }
+.lgitem { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.lgswatch { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+.lgline { width: 14px; height: 2px; border-radius: 1px; flex: none; }
+
+.chartbox { position: relative; }
+svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* table view - the WCAG-clean twin of every chart */
+.tableview { display: none; max-height: 340px; overflow: auto; margin-top: 4px; }
+.tableview.on { display: block; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td { text-align: right; padding: 5px 9px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+thead th { position: sticky; top: 0; background: var(--surface-1); color: var(--ink-2); font-weight: 600; z-index: 1; }
+td { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+td:first-child { color: var(--ink); }
+
+/* tooltip */
+.tip {
+  position: fixed; pointer-events: none; opacity: 0; z-index: 50;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; min-width: 150px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.13);
+  font-size: 12px; transition: opacity 90ms linear;
+}
+.tip.on { opacity: 1; }
+.tip .tiphead { font-weight: 600; font-size: 12px; margin-bottom: 5px; color: var(--ink); }
+.tip .tiprow { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.tip .tipkey { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.tip .tipval { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); min-width: 46px; text-align: right; }
+.tip .tipname { color: var(--ink-2); }
+
+/* footer / methodology */
+.foot { margin-top: 18px; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.foot h3 { font-size: 12.5px; color: var(--ink-2); margin: 0 0 4px; }
+.foot code { font-size: 11.5px; background: var(--hover-wash); padding: 1px 4px; border-radius: 3px; }
+.foot ul { margin: 0 0 10px; padding-left: 18px; }
+.empty { padding: 30px 6px; text-align: center; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 560px) {
+  .viz-root { padding: 12px; }
+  .tile.hero .tvalue { font-size: 38px; }
+}
+/* Texture is the backup identity channel: opt-in, or forced. */
+@media print { .filters, .tbtn { display: none !important; } }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+<div class="wrap">
+
+  <div class="head">
+    <h1>Prior Auth &mdash; RPA Performance</h1>
+    <div class="spacer"></div>
+    <div class="sub" id="freshness"></div>
+    <button class="tbtn" id="texToggle" aria-pressed="false" title="Adds directional patterns to fills so series stay distinguishable without color">Patterns</button>
+    <button class="tbtn" id="themeToggle" title="Switch light / dark">Theme</button>
+  </div>
+
+  <!-- One filter row, scoping everything below it. Date range first. -->
+  <div class="filters" role="group" aria-label="Dashboard filters">
+    <div class="fgroup">
+      <span class="flabel">Date</span>
+      <div class="presets" id="presets" role="group" aria-label="Date range preset"></div>
+    </div>
+    <div class="vsep"></div>
+    <div class="fgroup">
+      <input type="date" id="from" aria-label="Range start">
+      <span class="range-note">to</span>
+      <input type="date" id="to" aria-label="Range end">
+    </div>
+    <div class="vsep"></div>
+    <div class="fgroup">
+      <span class="flabel">Type</span>
+      <select id="ftype" aria-label="Filter by type"></select>
+    </div>
+    <div class="fgroup">
+      <span class="flabel">Status</span>
+      <select id="fstatus" aria-label="Filter by referral coordinator status"></select>
+    </div>
+    <div class="spacer" style="flex:1 1 auto"></div>
+    <span class="range-note" id="rangeEcho"></span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+  <p class="kpinote" id="kpinote"></p>
+
+  <div class="card">
+    <div class="chead">
+      <h2>RPA coverage and success rate over time</h2>
+      <div class="spacer"></div>
+      <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
+    </div>
+    <p class="csub" id="trendSub"></p>
+    <div class="legend" id="trendLegend"></div>
+    <div class="chartbox"><svg class="chart" id="trendChart" role="img"></svg></div>
+    <div class="tableview" id="trendTable"></div>
+  </div>
+
+  <div class="card">
+    <div class="chead">
+      <h2>Volume by how each auth was handled</h2>
+      <div class="spacer"></div>
+      <button class="tbtn" data-table="vol" aria-pressed="false">Table</button>
+    </div>
+    <p class="csub" id="volSub"></p>
+    <div class="legend" id="volLegend"></div>
+    <div class="chartbox"><svg class="chart" id="volChart" role="img"></svg></div>
+    <div class="tableview" id="volTable"></div>
+  </div>
+
+  <div class="card">
+    <div class="chead">
+      <h2>Top bot failure reasons</h2>
+      <div class="spacer"></div>
+      <button class="tbtn" data-table="reason" aria-pressed="false">Table</button>
+    </div>
+    <p class="csub">Normalized failure categories. Counts are bot runs that recorded a failure date, including runs that later succeeded on retry.</p>
+    <div class="chartbox"><svg class="chart" id="reasonChart" role="img"></svg></div>
+    <div class="tableview" id="reasonTable"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="chead">
+        <h2>Volume by type</h2>
+        <div class="spacer"></div>
+        <button class="tbtn" data-table="type" aria-pressed="false">Table</button>
+      </div>
+      <p class="csub">Ignores the Type filter so the full mix stays visible.</p>
+      <div class="chartbox"><svg class="chart" id="typeChart" role="img"></svg></div>
+      <div class="tableview" id="typeTable"></div>
+    </div>
+    <div class="card">
+      <div class="chead">
+        <h2>Volume by coordinator status</h2>
+        <div class="spacer"></div>
+        <button class="tbtn" data-table="status" aria-pressed="false">Table</button>
+      </div>
+      <p class="csub">Ignores the Status filter so the full mix stays visible.</p>
+      <div class="chartbox"><svg class="chart" id="statusChart" role="img"></svg></div>
+      <div class="tableview" id="statusTable"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <h3>How these numbers are defined</h3>
+    <ul>
+      <li><strong>Total auths</strong> &mdash; rows matching the current Type, Status and date filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
+      <li><strong>RPA success rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
+      <li><strong>Date presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
+      <li>Failure reasons are normalized into categories; member and authorization identifiers present in the raw text are stripped before publishing, and only aggregate counts are shipped.</li>
+    </ul>
+    <div id="provenance"></div>
+  </div>
+
+</div>
+</div>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+/* ====================================================================== state */
+var D = null;
+var S = { preset: "7d", from: null, to: null, type: "Appointment", status: "__all", tex: false };
+var TABLES = {};
+
+var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
+
+var PRESETS = [
+  { id: "7d",  label: "7 days",  days: 7 },
+  { id: "30d", label: "30 days", days: 30 },
+  { id: "90d", label: "90 days", days: 90 },
+  { id: "mtd", label: "MTD",     days: null },
+  { id: "all", label: "All",     days: null }
+];
+
+/* ====================================================================== utils */
+function $(id) { return document.getElementById(id); }
+
+function fmt(n) {
+  if (n === null || n === undefined || isNaN(n)) return "–";
+  var a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (a >= 1e4) return (n / 1e3).toFixed(a >= 1e5 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return n.toLocaleString("en-US");
+}
+function pct(x, dp) { return (x === null || isNaN(x)) ? "–" : (x * 100).toFixed(dp === undefined ? 1 : dp) + "%"; }
+
+function parseISO(s) { var p = s.split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+function toISO(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function shortDate(iso) {
+  var d = parseISO(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function longDate(iso) {
+  return parseISO(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+/* Axis ticks must land on clean numbers (0 / 50 / 100), never on maxV/4. */
+function niceScale(maxV, target) {
+  target = target || 4;
+  if (!(maxV > 0)) return { top: 1, step: 1 };
+  var raw = maxV / target;
+  var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  var norm = raw / mag;
+  var mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+  var step = mult * mag;
+  return { top: Math.ceil(maxV / step) * step, step: step };
+}
+
+/* SVG element helper. Text always via textContent - labels are untrusted CSV data. */
+function sv(tag, attrs, text) {
+  var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  if (attrs) for (var k in attrs) { if (attrs[k] !== null && attrs[k] !== undefined) e.setAttribute(k, attrs[k]); }
+  if (text !== null && text !== undefined) e.textContent = text;
+  return e;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+function cssVar(name) { return getComputedStyle($("root")).getPropertyValue(name).trim(); }
+
+/* Measured-width guard so a direct label is never clipped by its own mark. */
+var _meas = null;
+function textWidth(str, size, weight) {
+  if (!_meas) { _meas = document.createElement("canvas").getContext("2d"); }
+  _meas.font = (weight || 400) + " " + size + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+  return _meas.measureText(str).width;
+}
+
+/* ====================================================================== slicing */
+/* Date filtering is a lexicographic compare on YYYY-MM-DD, so gaps in the
+   calendar (weekends with no rows) can never shift a window. */
+function windowFor(preset, days) {
+  var max = D.dateMax;
+  if (preset === "all") return [D.dateMin, max];
+  if (preset === "mtd") { var d = parseISO(max); return [toISO(new Date(d.getFullYear(), d.getMonth(), 1)), max]; }
+  var end = parseISO(max);
+  var start = new Date(end.getTime());
+  start.setDate(start.getDate() - (days - 1));
+  var iso = toISO(start);
+  return [iso < D.dateMin ? D.dateMin : iso, max];
+}
+
+/* Previous window of equal calendar length, for the delta. */
+function priorWindow(from, to) {
+  var a = parseISO(from), b = parseISO(to);
+  var span = Math.round((b - a) / 86400000) + 1;
+  var pb = new Date(a.getTime()); pb.setDate(pb.getDate() - 1);
+  var pa = new Date(pb.getTime()); pa.setDate(pa.getDate() - (span - 1));
+  if (toISO(pb) < D.dateMin) return null;
+  return [toISO(pa), toISO(pb)];
+}
+
+/* Fact filter. ignore lets the type/status mix charts opt out of their own dimension. */
+function facts(from, to, ignore) {
+  ignore = ignore || {};
+  var ti = (S.type === "__all" || ignore.type) ? -1 : D.types.indexOf(S.type);
+  var si = (S.status === "__all" || ignore.status) ? -1 : D.statuses.indexOf(S.status);
+  var out = [];
+  for (var i = 0; i < D.facts.length; i++) {
+    var f = D.facts[i];
+    var d = D.dates[f[0]];
+    if (d < from || d > to) continue;
+    if (ti >= 0 && f[1] !== ti) continue;
+    if (si >= 0 && f[2] !== si) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+/* The four Schedule Auth metrics. One place, so every surface agrees. */
+function metrics(fs) {
+  var b = [0, 0, 0, 0];
+  for (var i = 0; i < fs.length; i++) { b[fs[i][3]] += fs[i][5]; }
+  var total = b[0] + b[1] + b[2] + b[3];
+  var touched = b[BUCKET.OK] + b[BUCKET.RETRY] + b[BUCKET.FAIL];
+  var success = b[BUCKET.OK] + b[BUCKET.RETRY];
+  return {
+    total: total, touched: touched, success: success,
+    ok: b[BUCKET.OK], retry: b[BUCKET.RETRY], fail: b[BUCKET.FAIL], human: b[BUCKET.HUMAN],
+    pctTouched: total ? touched / total : null,
+    successRate: touched ? success / touched : null
+  };
+}
+
+/* ====================================================================== buckets over time */
+function isoWeekStart(iso) {
+  var d = parseISO(iso);
+  var dow = (d.getDay() + 6) % 7;            /* Monday = 0 */
+  d.setDate(d.getDate() - dow);
+  return toISO(d);
+}
+
+/* Keep the column count readable: switch to weeks past ~70 days. */
+function timeBuckets(from, to, fs) {
+  var span = Math.round((parseISO(to) - parseISO(from)) / 86400000) + 1;
+  var weekly = span > 70;
+  var map = {};
+  for (var i = 0; i < fs.length; i++) {
+    var f = fs[i];
+    var iso = D.dates[f[0]];
+    var key = weekly ? isoWeekStart(iso) : iso;
+    if (!map[key]) map[key] = [0, 0, 0, 0];
+    map[key][f[3]] += f[5];
+  }
+  var keys = Object.keys(map).sort();
+  return {
+    weekly: weekly,
+    rows: keys.map(function (k) {
+      var b = map[k];
+      var total = b[0] + b[1] + b[2] + b[3];
+      var touched = b[0] + b[1] + b[2];
+      var success = b[0] + b[1];
+      return {
+        key: k, label: shortDate(k), ok: b[0], retry: b[1], fail: b[2], human: b[3],
+        total: total, touched: touched,
+        pctTouched: total ? touched / total : null,
+        successRate: touched ? success / touched : null
+      };
+    })
+  };
+}
+
+/* ====================================================================== tooltip */
+var tip = null;
+function tipShow(ev, title, rows) {
+  if (!tip) tip = $("tip");
+  clear(tip);
+  var h = document.createElement("div");
+  h.className = "tiphead";
+  h.textContent = title;
+  tip.appendChild(h);
+  rows.forEach(function (r) {
+    var row = document.createElement("div");
+    row.className = "tiprow";
+    if (r.color) {
+      var k = document.createElement("span");
+      k.className = "tipkey";
+      k.style.background = r.color;
+      row.appendChild(k);
+    }
+    var v = document.createElement("span");
+    v.className = "tipval";
+    v.textContent = r.value;                 /* values lead */
+    row.appendChild(v);
+    var n = document.createElement("span");
+    n.className = "tipname";
+    n.textContent = r.name;                  /* labels follow */
+    row.appendChild(n);
+    tip.appendChild(row);
+  });
+  tip.classList.add("on");
+  var pad = 14, w = tip.offsetWidth, hh = tip.offsetHeight;
+  var x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 6) x = ev.clientX - w - pad;
+  if (y + hh > window.innerHeight - 6) y = ev.clientY - hh - pad;
+  tip.style.left = Math.max(6, x) + "px";
+  tip.style.top = Math.max(6, y) + "px";
+}
+function tipHide() { if (tip) tip.classList.remove("on"); }
+
+/* ====================================================================== texture defs */
+/* The backup identity channel: 45 deg and its 135 deg mirror only, tone-on-tone. */
+function texDefs(svg, colors) {
+  var defs = sv("defs");
+  colors.forEach(function (c, i) {
+    var angle = (i % 2 === 0) ? 45 : 135;
+    var p = sv("pattern", {
+      id: "tex" + i, width: 6, height: 6,
+      patternUnits: "userSpaceOnUse",
+      patternTransform: "rotate(" + angle + ")"
+    });
+    p.appendChild(sv("rect", { width: 6, height: 6, fill: c }));
+    p.appendChild(sv("path", { d: "M0,0 L0,6", stroke: "rgba(0,0,0,0.42)", "stroke-width": 2.5 }));
+    defs.appendChild(p);
+  });
+  svg.appendChild(defs);
+}
+function paint(i, colors) { return S.tex ? "url(#tex" + i + ")" : colors[i]; }
+
+/* ====================================================================== legend */
+function legend(node, items) {
+  clear(node);
+  items.forEach(function (it) {
+    var w = document.createElement("span");
+    w.className = "lgitem";
+    var s = document.createElement("span");
+    s.className = it.line ? "lgline" : "lgswatch";
+    s.style.background = it.color;
+    w.appendChild(s);
+    var t = document.createElement("span");
+    t.textContent = it.name;
+    w.appendChild(t);
+    node.appendChild(w);
+  });
+}
+
+/* ====================================================================== table view */
+function renderTable(node, cols, rows) {
+  clear(node);
+  if (!rows.length) { var p = document.createElement("div"); p.className = "empty"; p.textContent = "No data in range."; node.appendChild(p); return; }
+  var t = document.createElement("table");
+  var thead = document.createElement("thead"), tr = document.createElement("tr");
+  cols.forEach(function (c) { var th = document.createElement("th"); th.textContent = c; th.scope = "col"; tr.appendChild(th); });
+  thead.appendChild(tr); t.appendChild(thead);
+  var tb = document.createElement("tbody");
+  rows.forEach(function (r) {
+    var row = document.createElement("tr");
+    r.forEach(function (c, i) {
+      var cell = document.createElement(i === 0 ? "th" : "td");
+      if (i === 0) cell.scope = "row";
+      cell.textContent = c;
+      row.appendChild(cell);
+    });
+    tb.appendChild(row);
+  });
+  t.appendChild(tb); node.appendChild(t);
+}
+
+function emptyChart(svg, msg) {
+  clear(svg);
+  svg.setAttribute("viewBox", "0 0 600 120");
+  var t = sv("text", { x: 300, y: 64, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 13 }, msg);
+  svg.appendChild(t);
+}
+
+/* ====================================================================== KPI tiles */
+function sparkline(rows, pick, accentColor) {
+  var N = 12;
+  var svg = sv("svg", { class: "spark", viewBox: "0 0 108 26", width: 108, height: 26, "aria-hidden": "true" });
+  if (rows.length < 2) return svg;
+  /* Compress the window into 12 even buckets. */
+  var pts = [], step = rows.length / N;
+  for (var i = 0; i < N; i++) {
+    var a = Math.floor(i * step), b = Math.max(a + 1, Math.floor((i + 1) * step));
+    var num = 0, den = 0;
+    for (var j = a; j < b && j < rows.length; j++) { var v = pick(rows[j]); if (v !== null && !isNaN(v)) { num += v; den++; } }
+    pts.push(den ? num / den : null);
+  }
+  var vals = pts.filter(function (v) { return v !== null; });
+  if (vals.length < 2) return svg;
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+  if (mx === mn) { mx = mn + 1; }
+  var X = function (i) { return 2 + (i / (N - 1)) * 104; };
+  var Y = function (v) { return 23 - ((v - mn) / (mx - mn)) * 20; };
+  var d = "", started = false;
+  pts.forEach(function (v, i) {
+    if (v === null) { started = false; return; }
+    d += (started ? " L" : " M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
+    started = true;
+  });
+  svg.appendChild(sv("path", { d: d.trim(), fill: "none", stroke: cssVar("--deemph"), "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  /* Current period rides in the accent. */
+  var last = -1;
+  for (var k = pts.length - 1; k >= 0; k--) { if (pts[k] !== null) { last = k; break; } }
+  if (last > 0 && pts[last - 1] !== null) {
+    svg.appendChild(sv("path", {
+      d: "M" + X(last - 1).toFixed(1) + "," + Y(pts[last - 1]).toFixed(1) + " L" + X(last).toFixed(1) + "," + Y(pts[last]).toFixed(1),
+      fill: "none", stroke: accentColor, "stroke-width": 2, "stroke-linecap": "round"
+    }));
+    svg.appendChild(sv("circle", { cx: X(last).toFixed(1), cy: Y(pts[last]).toFixed(1), r: 2.6, fill: accentColor }));
+  }
+  return svg;
+}
+
+function tile(spec) {
+  var d = document.createElement("div");
+  d.className = "tile" + (spec.hero ? " hero" : "");
+  var lab = document.createElement("div"); lab.className = "tlabel"; lab.textContent = spec.label;
+  d.appendChild(lab);
+  var val = document.createElement("div"); val.className = "tvalue"; val.textContent = spec.value;
+  d.appendChild(val);
+  var row = document.createElement("div"); row.className = "trow";
+  var left = document.createElement("div");
+  if (spec.delta) {
+    var dl = document.createElement("div");
+    dl.className = "tdelta" + (spec.deltaDir > 0 ? " up" : spec.deltaDir < 0 ? " down" : "");
+    /* Arrow + text, so direction never rests on color alone. */
+    dl.textContent = (spec.deltaDir > 0 ? "▲ " : spec.deltaDir < 0 ? "▼ " : "") + spec.delta;
+    left.appendChild(dl);
+  }
+  if (spec.denom) {
+    var dn = document.createElement("div"); dn.className = "tdenom"; dn.textContent = spec.denom;
+    left.appendChild(dn);
+  }
+  row.appendChild(left);
+  if (spec.spark) row.appendChild(spec.spark);
+  d.appendChild(row);
+  return d;
+}
+
+function renderKPIs(m, prev, rows, priorRange) {
+  var host = $("kpis");
+  clear(host);
+  $("kpinote").textContent = priorRange
+    ? "▲▼ compares against the preceding period of equal length (" + longDate(priorRange[0]) + " – " + longDate(priorRange[1]) + ")."
+    : "No earlier period of equal length exists in the export, so deltas are not shown.";
+  var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
+  var noun = (S.type === "__all") ? "auths" : (S.type === "Appointment" ? "schedule auths" : S.type.toLowerCase() + " auths");
+
+  /* Delta text stays short enough to sit on one line beside the sparkline; the
+     comparison window is stated once below the KPI row. */
+  function cntDelta(cur, old, goodUp) {
+    if (old === null || old === undefined || !old) return null;
+    var ch = (cur - old) / old;
+    return { text: (ch >= 0 ? "+" : "−") + Math.abs(ch * 100).toFixed(1) + "%", dir: goodUp ? (ch > 0 ? 1 : ch < 0 ? -1 : 0) : 0 };
+  }
+  function ppDelta(cur, old) {
+    if (cur === null || old === null || old === undefined) return null;
+    var ch = (cur - old) * 100;
+    return { text: (ch >= 0 ? "+" : "−") + Math.abs(ch).toFixed(1) + " pp", dir: ch > 0.05 ? 1 : ch < -0.05 ? -1 : 0 };
+  }
+
+  var dTotal = prev ? cntDelta(m.total, prev.total, false) : null;
+  var dTouch = prev ? cntDelta(m.touched, prev.touched, true) : null;
+  var dPct = prev ? ppDelta(m.pctTouched, prev.pctTouched) : null;
+  var dSucc = prev ? ppDelta(m.successRate, prev.successRate) : null;
+
+  host.appendChild(tile({
+    hero: true,
+    label: "Total " + noun,
+    value: fmt(m.total),
+    delta: dTotal && dTotal.text, deltaDir: dTotal ? dTotal.dir : 0,
+    spark: sparkline(rows, function (r) { return r.total; }, c1)
+  }));
+  host.appendChild(tile({
+    label: "Touched by RPA",
+    value: fmt(m.touched),
+    delta: dTouch && dTouch.text, deltaDir: dTouch ? dTouch.dir : 0,
+    denom: fmt(m.success) + " succeeded · " + fmt(m.fail) + " failed",
+    spark: sparkline(rows, function (r) { return r.touched; }, c1)
+  }));
+  host.appendChild(tile({
+    label: "Percent touched by RPA",
+    value: pct(m.pctTouched),
+    delta: dPct && dPct.text, deltaDir: dPct ? dPct.dir : 0,
+    denom: fmt(m.touched) + " of " + fmt(m.total),
+    spark: sparkline(rows, function (r) { return r.pctTouched; }, c1)
+  }));
+  host.appendChild(tile({
+    label: "RPA success rate",
+    value: pct(m.successRate),
+    delta: dSucc && dSucc.text, deltaDir: dSucc ? dSucc.dir : 0,
+    denom: fmt(m.success) + " of " + fmt(m.touched) + " touched",
+    spark: sparkline(rows, function (r) { return r.successRate; }, c2)
+  }));
+}
+
+/* ====================================================================== trend (lines) */
+function renderTrend(tb) {
+  var svg = $("trendChart");
+  var rows = tb.rows;
+  $("trendSub").textContent = (tb.weekly ? "Weekly" : "Daily")
+    + " — both series are percentages on a single 0–100% axis."
+    + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "");
+
+  var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
+  legend($("trendLegend"), [
+    { name: "Percent touched by RPA", color: c1, line: true },
+    { name: "RPA success rate", color: c2, line: true }
+  ]);
+  TABLES.trend = function () {
+    renderTable($("trendTable"), [tb.weekly ? "Week of" : "Date", "Total", "Touched", "% touched", "Success rate"],
+      rows.map(function (r) { return [longDate(r.key), fmt(r.total), fmt(r.touched), pct(r.pctTouched), pct(r.successRate)]; }));
+  };
+  TABLES.trend();
+
+  if (rows.length === 0) { emptyChart(svg, "No data in the selected range."); return; }
+  if (rows.length === 1) { emptyChart(svg, "Only one time bucket in range — widen the date range to see a trend."); return; }
+
+  clear(svg);
+  var W = 980, H = 300, m = { t: 14, r: 54, b: 34, l: 44 };
+  var pw = W - m.l - m.r, ph = H - m.t - m.b;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("aria-label", "Line chart of percent touched by RPA and RPA success rate over time");
+
+  var X = function (i) { return m.l + (rows.length === 1 ? pw / 2 : (i / (rows.length - 1)) * pw); };
+  var Y = function (v) { return m.t + ph - v * ph; };
+
+  /* gridlines: solid hairlines, one step off surface, recessive */
+  [0, 0.25, 0.5, 0.75, 1].forEach(function (v) {
+    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: cssVar("--grid"), "stroke-width": 1 }));
+    svg.appendChild(sv("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11 }, (v * 100) + "%"));
+  });
+  svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
+
+  /* x labels, thinned to avoid collisions */
+  var every = Math.max(1, Math.ceil(rows.length / 11));
+  rows.forEach(function (r, i) {
+    if (i % every !== 0 && i !== rows.length - 1) return;
+    svg.appendChild(sv("text", { x: X(i), y: H - 12, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 11 }, r.label));
+  });
+
+  var series = [
+    { key: "pctTouched", color: c1, name: "% touched" },
+    { key: "successRate", color: c2, name: "Success rate" }
+  ];
+  series.forEach(function (s) {
+    var d = "", started = false, lastPt = null;
+    rows.forEach(function (r, i) {
+      var v = r[s.key];
+      if (v === null || isNaN(v)) { started = false; return; }
+      d += (started ? " L" : " M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
+      started = true; lastPt = { x: X(i), y: Y(v), v: v };
+    });
+    if (d) svg.appendChild(sv("path", { d: d.trim(), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    if (lastPt) {
+      /* end marker: >=8px with a 2px surface ring */
+      svg.appendChild(sv("circle", { cx: lastPt.x, cy: lastPt.y, r: 4.5, fill: s.color, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
+      /* direct end label in text ink, never the series color */
+      svg.appendChild(sv("text", {
+        x: lastPt.x + 10, y: lastPt.y + 4, fill: cssVar("--ink"),
+        "font-size": 11.5, "font-weight": 600
+      }, pct(lastPt.v, 0)));
+    }
+  });
+
+  /* crosshair + one tooltip listing every series: the reader aims at a date */
+  var cross = sv("line", { y1: m.t, y2: m.t + ph, stroke: cssVar("--baseline"), "stroke-width": 1, opacity: 0 });
+  svg.appendChild(cross);
+  var dots = series.map(function (s) {
+    var c = sv("circle", { r: 4.5, fill: s.color, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
+    svg.appendChild(c); return c;
+  });
+  var hit = sv("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent", style: "cursor:crosshair" });
+  svg.appendChild(hit);
+
+  function at(ev) {
+    var box = svg.getBoundingClientRect();
+    var sx = (ev.clientX - box.left) / box.width * W;
+    var i = Math.round(((sx - m.l) / pw) * (rows.length - 1));
+    i = Math.max(0, Math.min(rows.length - 1, i));
+    var r = rows[i];
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity", 1);
+    series.forEach(function (s, k) {
+      var v = r[s.key];
+      if (v === null || isNaN(v)) { dots[k].setAttribute("opacity", 0); return; }
+      dots[k].setAttribute("cx", X(i)); dots[k].setAttribute("cy", Y(v)); dots[k].setAttribute("opacity", 1);
+    });
+    tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), [
+      { name: "touched by RPA", value: pct(r.pctTouched), color: c1 },
+      { name: "RPA success rate", value: pct(r.successRate), color: c2 },
+      { name: "total auths", value: fmt(r.total), color: null },
+      { name: "touched / failed", value: fmt(r.touched) + " / " + fmt(r.fail), color: null }
+    ]);
+  }
+  hit.addEventListener("pointermove", at);
+  hit.addEventListener("pointerleave", function () {
+    cross.setAttribute("opacity", 0);
+    dots.forEach(function (d) { d.setAttribute("opacity", 0); });
+    tipHide();
+  });
+}
+
+/* ====================================================================== volume (stacked columns) */
+function renderVolume(tb) {
+  var svg = $("volChart");
+  var rows = tb.rows;
+  $("volSub").textContent = (tb.weekly ? "Weekly" : "Daily") + " counts, stacked to the period total."
+    + " Bot successes include runs that failed once and succeeded on retry.";
+
+  var cols = [cssVar("--series-1"), cssVar("--series-2"), cssVar("--series-3")];
+  legend($("volLegend"), [
+    { name: "RPA succeeded", color: S.tex ? cols[0] : cols[0] },
+    { name: "RPA failed", color: cols[1] },
+    { name: "Handled manually", color: cols[2] }
+  ]);
+
+  TABLES.vol = function () {
+    renderTable($("volTable"),
+      [tb.weekly ? "Week of" : "Date", "RPA succeeded", "of which retried", "RPA failed", "Manual", "Total"],
+      rows.map(function (r) { return [longDate(r.key), fmt(r.ok + r.retry), fmt(r.retry), fmt(r.fail), fmt(r.human), fmt(r.total)]; }));
+  };
+  TABLES.vol();
+
+  if (!rows.length) { emptyChart(svg, "No data in the selected range."); return; }
+
+  clear(svg);
+  var W = 980, H = 300, m = { t: 14, r: 12, b: 34, l: 50 };
+  var pw = W - m.l - m.r, ph = H - m.t - m.b;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("aria-label", "Stacked column chart of auth volume by how each auth was handled");
+  if (S.tex) texDefs(svg, cols);
+
+  var maxV = Math.max.apply(null, rows.map(function (r) { return r.total; })) || 1;
+  var sc = niceScale(maxV, 4);
+  var top = sc.top;
+  var Y = function (v) { return m.t + ph - (v / top) * ph; };
+
+  var band = pw / rows.length;
+  var bw = Math.min(24, Math.max(3, band - 6));   /* cap thickness; leave air */
+
+  for (var tv = 0; tv <= top + 1e-9; tv += sc.step) {
+    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(tv), y2: Y(tv), stroke: cssVar("--grid"), "stroke-width": 1 }));
+    svg.appendChild(sv("text", { x: m.l - 8, y: Y(tv) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11, style: "font-variant-numeric:tabular-nums" }, fmt(Math.round(tv))));
+  }
+  svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
+
+  var every = Math.max(1, Math.ceil(rows.length / 11));
+  rows.forEach(function (r, i) {
+    var cx = m.l + band * i + band / 2;
+    if (i % every === 0 || i === rows.length - 1) {
+      svg.appendChild(sv("text", { x: cx, y: H - 12, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 11 }, r.label));
+    }
+  });
+
+  var GAP = 2;   /* surface gap does the separating - never a stroke */
+  rows.forEach(function (r, i) {
+    var cx = m.l + band * i + band / 2;
+    var x = cx - bw / 2;
+    var segs = [
+      { v: r.ok + r.retry, ci: 0 },
+      { v: r.fail, ci: 1 },
+      { v: r.human, ci: 2 }
+    ].filter(function (s) { return s.v > 0; });
+
+    var acc = 0;
+    segs.forEach(function (s, si) {
+      var isTop = si === segs.length - 1;
+      var yBottom = Y(acc), yTop = Y(acc + s.v);
+      /* The gap lives at the TOP of every segment except the topmost one, so the
+         2px of surface falls between neighbouring fills. */
+      var inset = isTop ? 0 : GAP;
+      var h = Math.max(1, (yBottom - yTop) - inset);
+      svg.appendChild(sv("rect", {
+        x: x.toFixed(1), y: (yTop + inset).toFixed(1), width: bw.toFixed(1), height: h.toFixed(1),
+        fill: paint(s.ci, cols),
+        rx: isTop ? Math.min(4, bw / 2) : 0,                 /* rounded data-end only */
+        ry: isTop ? Math.min(4, bw / 2) : 0
+      }));
+      acc += s.v;
+    });
+
+    /* full-height hit target so the pointer only needs the right column */
+    var hit = sv("rect", { x: (cx - band / 2).toFixed(1), y: m.t, width: Math.max(band, 1).toFixed(1), height: ph, fill: "transparent" });
+    hit.setAttribute("tabindex", "0");
+    hit.setAttribute("role", "img");
+    hit.setAttribute("aria-label", longDate(r.key) + ": " + (r.ok + r.retry) + " RPA succeeded, " + r.fail + " RPA failed, " + r.human + " manual");
+    function show(ev) {
+      var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + b.width / 2, clientY: b.top + 20 }; })();
+      tipShow(e, (tb.weekly ? "Week of " : "") + longDate(r.key), [
+        { name: "RPA succeeded", value: fmt(r.ok + r.retry), color: cols[0] },
+        { name: "RPA failed", value: fmt(r.fail), color: cols[1] },
+        { name: "handled manually", value: fmt(r.human), color: cols[2] },
+        { name: "total", value: fmt(r.total), color: null }
+      ]);
+    }
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("focus", show);
+    hit.addEventListener("pointerleave", tipHide);
+    hit.addEventListener("blur", tipHide);
+    svg.appendChild(hit);
+  });
+}
+
+/* ====================================================================== horizontal bars */
+/* Nominal categories: ONE color for every bar. Never a value-ramp. */
+function renderHBar(svg, node, tableNode, items, opts) {
+  opts = opts || {};
+  var color = cssVar("--series-1");
+  var cols = [color];
+  var total = items.reduce(function (a, b) { return a + b.v; }, 0);
+
+  TABLES[opts.tableKey] = function () {
+    renderTable(tableNode, [opts.catLabel || "Category", "Count", "Share"],
+      items.map(function (it) { return [it.name, fmt(it.v), total ? pct(it.v / total, 1) : "–"]; }));
+  };
+  TABLES[opts.tableKey]();
+
+  if (!items.length) { emptyChart(svg, "No data in the selected range."); return; }
+
+  clear(svg);
+  var LABEL_W = opts.labelWidth || 230;
+  var rowH = 26, pad = { t: 6, r: 56, b: 6 };
+  /* The viewBox width must track the card's real width. A wide viewBox scaled
+     into a half-width card shrinks label text to the point of illegibility. */
+  var W = opts.width || 960;
+  var H = pad.t + items.length * rowH + pad.b;
+  var pw = W - LABEL_W - pad.r;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("aria-label", opts.aria || "Horizontal bar chart");
+  if (S.tex) texDefs(svg, cols);
+
+  var maxV = Math.max.apply(null, items.map(function (i) { return i.v; })) || 1;
+  var bh = 14;   /* thin mark */
+
+  items.forEach(function (it, i) {
+    var cy = pad.t + i * rowH + rowH / 2;
+    var w = Math.max(2, (it.v / maxV) * pw);
+
+    /* category label - text ink, truncated by measurement, full text on hover */
+    var label = it.name, size = 12;
+    if (textWidth(label, size) > LABEL_W - 12) {
+      while (label.length > 4 && textWidth(label + "…", size) > LABEL_W - 12) { label = label.slice(0, -1); }
+      label += "…";
+    }
+    svg.appendChild(sv("text", { x: LABEL_W - 12, y: cy + 4, "text-anchor": "end", fill: cssVar("--ink"), "font-size": size }, label));
+
+    svg.appendChild(sv("rect", {
+      x: LABEL_W, y: cy - bh / 2, width: w.toFixed(1), height: bh,
+      fill: paint(0, cols), rx: Math.min(4, bh / 2), ry: Math.min(4, bh / 2)
+    }));
+    /* value at the tip, outside the bar - never clipped */
+    svg.appendChild(sv("text", {
+      x: LABEL_W + w + 8, y: cy + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600,
+      style: "font-variant-numeric:tabular-nums"
+    }, fmt(it.v)));
+
+    /* hit target spans the full row and clears 24px */
+    var hit = sv("rect", { x: 0, y: cy - rowH / 2, width: W, height: rowH, fill: "transparent", tabindex: "0", role: "img" });
+    hit.setAttribute("aria-label", it.name + ": " + it.v + (total ? " (" + pct(it.v / total, 1) + ")" : ""));
+    function show(ev) {
+      var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + 80, clientY: b.top + 10 }; })();
+      tipShow(e, it.name, [
+        { name: "count", value: fmt(it.v), color: color },
+        { name: "share of total", value: total ? pct(it.v / total, 1) : "–", color: null }
+      ]);
+    }
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("focus", show);
+    hit.addEventListener("pointerleave", tipHide);
+    hit.addEventListener("blur", tipHide);
+    svg.appendChild(hit);
+  });
+}
+
+/* ====================================================================== render all */
+function render() {
+  if (!D) return;
+
+  /* resolve the active window */
+  var from, to;
+  if (S.preset === "custom") { from = S.from; to = S.to; }
+  else { var w = windowFor(S.preset, (PRESETS.filter(function (p) { return p.id === S.preset; })[0] || {}).days); from = w[0]; to = w[1]; }
+  if (from > to) { var t = from; from = to; to = t; }
+  S.from = from; S.to = to;
+  $("from").value = from; $("to").value = to;
+  $("rangeEcho").textContent = longDate(from) + " – " + longDate(to);
+
+  Array.prototype.forEach.call($("presets").children, function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.id === S.preset));
+  });
+
+  var fs = facts(from, to);
+  var m = metrics(fs);
+  var tb = timeBuckets(from, to, fs);
+
+  var pw2 = priorWindow(from, to);
+  var prev = pw2 ? metrics(facts(pw2[0], pw2[1])) : null;
+
+  renderKPIs(m, prev, tb.rows, pw2);
+  renderTrend(tb);
+  renderVolume(tb);
+
+  /* failure reasons - counted from rows that recorded a bot failure */
+  var rmap = {};
+  fs.forEach(function (f) {
+    if (f[4] < 0) return;
+    var name = D.reasons[f[4]];
+    rmap[name] = (rmap[name] || 0) + f[5];
+  });
+  var reasons = Object.keys(rmap).map(function (k) { return { name: k, v: rmap[k] }; })
+    .sort(function (a, b) { return b.v - a.v; });
+  /* Past ~12 classes adjacent rows blur - fold the tail so the chart stays readable;
+     the table view keeps every category reachable. */
+  var TOPN = 12;
+  var shown = reasons.slice(0, TOPN);
+  if (reasons.length > TOPN) {
+    var rest = reasons.slice(TOPN).reduce(function (a, b) { return a + b.v; }, 0);
+    if (rest > 0) shown.push({ name: "Other (" + (reasons.length - TOPN) + " categories)", v: rest });
+  }
+  renderHBar($("reasonChart"), null, $("reasonTable"), shown, {
+    tableKey: "reason", catLabel: "Failure reason", labelWidth: 250,
+    aria: "Horizontal bar chart of bot failure counts by reason"
+  });
+  /* full list in the table, not just the top 12 */
+  TABLES.reason = function () {
+    var tot = reasons.reduce(function (a, b) { return a + b.v; }, 0);
+    renderTable($("reasonTable"), ["Failure reason", "Count", "Share"],
+      reasons.map(function (r) { return [r.name, fmt(r.v), tot ? pct(r.v / tot, 1) : "–"]; }));
+  };
+  TABLES.reason();
+
+  /* mix charts ignore their own dimension so the full mix stays visible */
+  var byType = {}, fsT = facts(from, to, { type: true });
+  fsT.forEach(function (f) { var n = D.types[f[1]]; byType[n] = (byType[n] || 0) + f[5]; });
+  renderHBar($("typeChart"), null, $("typeTable"),
+    Object.keys(byType).map(function (k) { return { name: k, v: byType[k] }; }).sort(function (a, b) { return b.v - a.v; }),
+    { tableKey: "type", catLabel: "Type", labelWidth: 120, width: 430, aria: "Horizontal bar chart of volume by type" });
+
+  var byStatus = {}, fsS = facts(from, to, { status: true });
+  fsS.forEach(function (f) { var n = D.statuses[f[2]]; byStatus[n] = (byStatus[n] || 0) + f[5]; });
+  renderHBar($("statusChart"), null, $("statusTable"),
+    Object.keys(byStatus).map(function (k) { return { name: k, v: byStatus[k] }; }).sort(function (a, b) { return b.v - a.v; }),
+    { tableKey: "status", catLabel: "Status", labelWidth: 140, width: 430, aria: "Horizontal bar chart of volume by coordinator status" });
+}
+
+/* ====================================================================== wiring */
+function buildControls() {
+  var host = $("presets");
+  clear(host);
+  PRESETS.forEach(function (p) {
+    var b = document.createElement("button");
+    b.className = "preset"; b.type = "button";
+    b.dataset.id = p.id;
+    b.textContent = p.label;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", function () { S.preset = p.id; render(); });
+    host.appendChild(b);
+  });
+
+  var ft = $("ftype");
+  clear(ft);
+  var optAll = document.createElement("option"); optAll.value = "__all"; optAll.textContent = "All types";
+  ft.appendChild(optAll);
+  D.types.forEach(function (t) {
+    var o = document.createElement("option"); o.value = t; o.textContent = t; ft.appendChild(o);
+  });
+  if (D.types.indexOf("Appointment") < 0) S.type = "__all";
+  ft.value = S.type;
+  ft.addEventListener("change", function () { S.type = ft.value; render(); });
+
+  var fst = $("fstatus");
+  clear(fst);
+  var sAll = document.createElement("option"); sAll.value = "__all"; sAll.textContent = "All statuses";
+  fst.appendChild(sAll);
+  D.statuses.forEach(function (s) {
+    var o = document.createElement("option"); o.value = s; o.textContent = s; fst.appendChild(o);
+  });
+  fst.value = S.status;
+  fst.addEventListener("change", function () { S.status = fst.value; render(); });
+
+  ["from", "to"].forEach(function (id) {
+    var el = $(id);
+    el.min = D.dateMin; el.max = D.dateMax;
+    el.addEventListener("change", function () {
+      S.preset = "custom";
+      S.from = $("from").value || D.dateMin;
+      S.to = $("to").value || D.dateMax;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-table]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.dataset.table;
+      var box = $(key + "Table");
+      var on = box.classList.toggle("on");
+      btn.setAttribute("aria-pressed", String(on));
+    });
+  });
+
+  $("themeToggle").addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme");
+    var next = cur === "dark" ? "light" : cur === "light" ? "" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    render();   /* colors are read from CSS vars, so re-render to repaint SVG */
+  });
+
+  $("texToggle").addEventListener("click", function () {
+    S.tex = !S.tex;
+    $("texToggle").setAttribute("aria-pressed", String(S.tex));
+    render();
+  });
+}
+
+function boot(data) {
+  D = data;
+  D.types = D.types || [];
+  D.statuses = D.statuses || [];
+  D.reasons = D.reasons || [];
+
+  var gen = new Date(D.generatedUtc);
+  $("freshness").textContent = "Data through " + longDate(D.dateMax)
+    + " · built " + (isNaN(gen) ? D.generatedUtc : gen.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }));
+
+  var prov = $("provenance");
+  prov.textContent = "Source: " + D.sourceFile + " · " + fmt(D.rowsUsed) + " rows aggregated"
+    + (D.rowsDropped ? " · " + fmt(D.rowsDropped) + " dropped for an unreadable date" : "")
+    + " · export covers " + longDate(D.dateMin) + " to " + longDate(D.dateMax) + ".";
+
+  /* ?theme=dark|light pins the theme - useful for a Notion embed URL */
+  var q = new URLSearchParams(location.search);
+  var th = q.get("theme");
+  if (th === "dark" || th === "light") document.documentElement.setAttribute("data-theme", th);
+  var qp = q.get("range");
+  if (qp && PRESETS.some(function (p) { return p.id === qp; })) S.preset = qp;
+  var qt = q.get("type");
+  if (qt) S.type = qt;
+
+  buildControls();
+  render();
+}
+
+function fail(msg, detail) {
+  var w = document.querySelector(".wrap");
+  clear(w);
+  var h = document.createElement("h1");
+  h.style.fontSize = "17px";
+  h.textContent = "Could not load dashboard data";
+  var p = document.createElement("p");
+  p.style.cssText = "font-size:13px;color:var(--ink-2);line-height:1.6;max-width:62ch";
+  p.textContent = msg;
+  w.appendChild(h); w.appendChild(p);
+  if (detail) {
+    var pre = document.createElement("pre");
+    pre.style.cssText = "font-size:11.5px;color:var(--muted);white-space:pre-wrap";
+    pre.textContent = String(detail);
+    w.appendChild(pre);
+  }
+}
+
+/* The timestamp defeats the GitHub Pages CDN, which otherwise serves a stale
+   data.json for up to ~10 minutes after a refresh push. */
+fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+  .then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status + " fetching data.json");
+    return r.json();
+  })
+  .then(boot)
+  .catch(function (e) {
+    var localFile = location.protocol === "file:";
+    fail(localFile
+      ? "Opening this file straight from disk blocks the data fetch (browser file:// security) — this is expected and does not mean the dashboard is broken. To preview locally, run Serve-Dashboard.ps1 from the project folder and open the URL it prints. Once the folder is on GitHub Pages it loads normally."
+      : "data.json could not be loaded. Confirm it sits next to index.html and that Build-Dashboard.ps1 ran without errors.", e && e.message);
+  });
+
+window.addEventListener("resize", (function () {
+  var t = null;
+  return function () { clearTimeout(t); t = setTimeout(function () { if (D) render(); }, 160); };
+})());
+</script>
+</body>
+</html>
