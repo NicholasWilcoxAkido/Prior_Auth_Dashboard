@@ -95,18 +95,25 @@ When a new export arrives:
 2. Run the build:
 
    ```powershell
-   .\Build-Dashboard.ps1 -Source "Orders_and_Appointments_V1.03.csv"
+   .\Build-Dashboard.ps1 -Source "Orders_and_AppointmentsV1.05.csv"
    ```
 
-   It prints what it redacted and the headline metrics, so you can
-   sanity-check both before publishing:
+   It prints what it redacted, which date column it bucketed on, and the
+   headline metrics, so you can sanity-check all three before publishing:
 
    ```
-   Sanitized: RC Assigned -> 13376 bot / 91759 human / 0 unassigned
+   Sanitized: RC Assigned -> 13496 bot / 91944 human / 0 unassigned
               (67 coordinator names discarded)
    Sanitized: 834 fail reasons had names/identifiers redacted
+   Date basis     : Date Auth Completed Roll Up
+   Rows aggregated: 105417  (dropped for unparsable date: 0,
+                             dated after the 2026-10-08 pull: 23)
    Publish gate: no identifier-like text in 40 reason categories
    ```
+
+   **Check the `Date basis` line.** If it ever says anything other than
+   `Date Auth Completed Roll Up`, every chart has silently changed meaning —
+   see *The date basis* below.
 
 3. Preview locally (optional):
 
@@ -222,9 +229,62 @@ range — e.g. a 14-day operational view near the top and a YTD trend below.
 
 ---
 
+## The date basis — read this first
+
+Every date on this dashboard is **`Date Auth Completed Roll Up`**. The dashboard
+reports **throughput**: what got *finished* in a period. It is not an intake
+report, and the distinction is not cosmetic — a September *completion* cohort and
+a September *creation* cohort overlap by barely half. September 2026 reads
+**11,993** across all types on this basis; on the old creation basis the same
+month read **7,768**. Both were correct; they answer different questions.
+
+The source export must carry all **seven** columns, and the build fails loudly if
+any are absent:
+
+```
+Date Created (Roll-Up)          Bot Run Fail Date
+Type                            Bot Run Fail Reason
+Status (Referral Coordinator)   Date Auth Completed Roll Up   <- the date basis
+RC Assigned
+```
+
+`Date Created (Roll-Up)` is still required and still kept in the sanitized copy,
+but nothing is bucketed on it. Switching back is a one-line change —
+`$COL_BASIS` in `Build-Dashboard.ps1` — and it rewrites the meaning of every
+chart, so don't do it quietly.
+
+### Three things this basis costs you
+
+1. **History starts 2026-01-01, hard.** Not one row in the export has a
+   completion date in 2025, even though 10,657 rows were *created* between July
+   and December 2025 — those all carry 2026 completion dates, decaying from 4,588
+   in January to a few dozen by autumn. Whether that is a real cleared backlog or
+   an artifact of when the field started being populated is a **Quickbase
+   question, not a dashboard one**. Either way the x-axis cannot go back further,
+   so `YTD` and `All` currently show the same window.
+2. **The open backlog is invisible.** `Date Auth Completed Roll Up` is **100%
+   populated** — zero blanks in 105,440 rows. A genuine completion field would be
+   blank for anything still in flight, so in-progress authorizations either aren't
+   in this export or aren't distinguishable in it. Nothing here can tell you how
+   much work is currently open.
+3. **About 6% of rows complete before they're created.** 6,536 rows have a
+   completion date earlier than their creation date, which is impossible for a
+   true timestamp pair. It doesn't affect any current metric — nothing computes a
+   duration — but it does mean **turnaround time cannot be built on these two
+   columns** until it's explained.
+
+A fourth issue was found and handled: **23 rows carry completion dates after the
+day the export was pulled**, the furthest 2027-03-30. Date presets anchor to the
+latest date in the file, so that single 2027 row would have dragged the "14 Days"
+window five months into empty calendar and opened the dashboard blank. The build
+now drops anything dated past the export's own pull date and prints the count.
+
+---
+
 ## Metric definitions
 
-Scoped to the current Type, Status, and date filters. Type is matched
+Scoped to the current Type, Status, and date filters. "In the period" means
+**completed** in the period. Type is matched
 case-insensitively, because the export mixes `Appointment` with `DIAGNOSTIC`
 and `REFERRAL`. `RC Assigned` is tested with *contains* `svc-quickbase` against
 the raw value, before sanitization collapses it — so the metrics are unaffected
@@ -233,28 +293,32 @@ without the sanitize stage.)
 
 | Metric | Definition |
 |---|---|
-| **Total Schedule Authorizations** | Row count where `Type = Appointment`. |
+| **Total Schedule Authorizations** | Count of authorizations **completed** in the period where `Type = Appointment`. |
 | **Touched by RPA** | **Distinct** rows where `RC Assigned` contains `svc-quickbase` **or** `Bot Run Fail Date` is populated. |
 | **Percent Touched by RPA** | Touched ÷ Total. |
 | **RPA Success Rate** | Rows where `RC Assigned` contains `svc-quickbase` ÷ Touched. |
 
 ### Three decisions worth knowing about
 
-**Overlapping rows are counted once.** 463 Appointment rows have *both* an
+**Overlapping rows are counted once.** 462 Appointment rows have *both* an
 `svc-quickbase` assignment and a `Bot Run Fail Date`. Summing the two counts
 would double-count them, so "touched" uses the de-duplicated union. These rows
 are treated as **bot failed, then succeeded on retry** — they count as touched
-*and* as successes. Across the full V1.03 export:
+*and* as successes. Across the full V1.05 export:
 
 ```
-12,783  bot succeeded
-   463  bot succeeded after a retry
- 5,013  bot failed
+12,894  bot succeeded
+   462  bot succeeded after a retry
+ 5,009  bot failed
 ------
-18,259  touched by RPA   (not 18,722 — that figure double-counts the 463)
+18,365  touched by RPA   (not 18,827 — that figure double-counts the 462)
 ```
 
-This makes all-time coverage 30.4% rather than 31.2%, and success rate 72.6%.
+This makes all-time coverage 30.5% rather than 31.2%, and success rate 72.7%.
+Note that all-time coverage is essentially **unchanged** by the switch to the
+completion basis (30.41% → 30.45%), which is the expected result: re-dating rows
+moves them between periods but doesn't add or remove any. The basis changes
+*period* figures, not the grand total.
 
 **A delta is only shown when the comparison period is fully present.** The
 ▲▼ figures compare against the preceding window of equal length. If that window
@@ -274,9 +338,14 @@ populated. The exact window is always printed at the right of the filter row.
 - **Filters** sit in one row and scope everything below them. Presets are
   **14 Days · 1M · 1Q · YTD · All**; the default is **1Q** with
   `Type = Appointment`. `1M` and `1Q` are inclusive calendar months (a `1M`
-  window ending Oct 7 starts Sep 8), and `YTD` runs from Jan 1 of the latest
+  window ending Oct 8 starts Sep 9), and `YTD` runs from Jan 1 of the latest
   year in the export. A quarter is wide enough that the charts bucket by week,
-  which is why the opening view is weekly rather than daily.
+  which is why the opening view is weekly rather than daily. **`YTD` and `All`
+  currently show the same window**, because the earliest completion date in the
+  export is Jan 1, 2026.
+- **Every number is a count of authorizations *completed* in the window**, not
+  requested in it. See *The date basis* above — this is the single most
+  misreadable thing about the dashboard.
 - **Every chart has a `Table` toggle** — the accessible, copy-pasteable twin.
   The failure-reason table lists *all* categories, not just the charted top 12.
 - **"Authorization Volume vs. Volume Touched by RPA" plots two counts on one
@@ -302,9 +371,14 @@ populated. The exact window is always printed at the right of the filter row.
 
 Ideas beyond the current scope, roughly in order of value:
 
-1. **Turnaround time** — the export has no completion timestamp. If one can be
-   added, median hours from created → resolved, split bot vs manual, is likely
-   the strongest ROI metric available.
+1. **Turnaround time** — the export now has both a creation and a completion
+   date, so median days from created → completed, split bot vs manual, is within
+   reach and is probably the strongest ROI metric available. **Blocked on one
+   data question:** 6% of rows complete before they're created (see *The date
+   basis*), so the pairing isn't yet trustworthy enough to publish a duration.
+2. **Open backlog / aging** — needs an export where
+   `Date Auth Completed Roll Up` is blank for in-flight work. It is currently
+   100% populated, so open authorizations can't be counted at all.
 2. **Hours saved** — touched-and-succeeded × an agreed minutes-per-auth figure.
    Needs one number from you to be credible.
 3. **Failure-reason trend** — which categories are growing, not just which are

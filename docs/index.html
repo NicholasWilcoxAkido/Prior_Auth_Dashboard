@@ -299,7 +299,8 @@ td:first-child { color: var(--ink); }
   <div class="foot">
     <h3>How These Numbers Are Defined</h3>
     <ul>
-      <li><strong>Total Authorizations</strong> &mdash; rows matching the current Type, Status and date filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Every date is the date the authorization was completed</strong> (<code>Date Auth Completed Roll Up</code>), not the date it was requested. So this dashboard measures <strong>throughput</strong> &mdash; what finished in the window. A request that arrived in August and finished in September counts in September.</li>
+      <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type and Status filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
       <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
       <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
       <li><strong>Date Presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
@@ -1182,13 +1183,18 @@ function boot(data) {
   D.reasons = D.reasons || [];
 
   var gen = new Date(D.generatedUtc);
-  $("freshness").textContent = "Data through " + longDate(D.dateMax)
+  /* "Completions through", not "Data through" - the dashboard buckets on the
+     completion date, and saying so in the header is the cheapest possible guard
+     against someone reading these as intake numbers. */
+  $("freshness").textContent = "Completions through " + longDate(D.dateMax)
     + " · built " + (isNaN(gen) ? D.generatedUtc : gen.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }));
 
   var prov = $("provenance");
   prov.textContent = "Source: " + D.sourceFile + " · " + fmt(D.rowsUsed) + " rows aggregated"
     + (D.rowsDropped ? " · " + fmt(D.rowsDropped) + " dropped for an unreadable date" : "")
-    + " · export covers " + longDate(D.dateMin) + " to " + longDate(D.dateMax) + ".";
+    + (D.rowsFuture ? " · " + fmt(D.rowsFuture) + " dropped for a completion date after the export was pulled" : "")
+    + " · dated on " + (D.dateBasis || "Date Auth Completed Roll Up")
+    + ", covering " + longDate(D.dateMin) + " to " + longDate(D.dateMax) + ".";
 
   /* ?theme=dark|light pins the theme - useful for a Notion embed URL */
   var q = new URLSearchParams(location.search);

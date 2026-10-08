@@ -89,14 +89,22 @@ if ($rows.Count -eq 0) { throw "Source contained no data rows." }
 
 # ---------------------------------------------------------------- validate schema
 $COL_DATE   = 'Date Created (Roll-Up)'
+$COL_CDATE  = 'Date Auth Completed Roll Up'
 $COL_TYPE   = 'Type'
 $COL_STATUS = 'Status (Referral Coordinator)'
 $COL_RC     = 'RC Assigned'
 $COL_FDATE  = 'Bot Run Fail Date'
 $COL_FREASON= 'Bot Run Fail Reason'
 
+# Every date on the dashboard buckets on THIS column. It is the completion date,
+# so the dashboard reports throughput (what got finished in a period), not intake
+# (what arrived). Changing this one line changes the meaning of every chart, and
+# the two cohorts genuinely differ - a September completion report and a September
+# creation report overlap by barely half. Don't switch it casually.
+$COL_BASIS  = $COL_CDATE
+
 $present = $rows[0].PSObject.Properties.Name
-$missing = @($COL_DATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON |
+$missing = @($COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON |
              Where-Object { $_ -notin $present })
 if ($missing.Count) {
     throw "Source is missing required column(s): $($missing -join ', ')`nFound: $($present -join ', ')"
@@ -198,7 +206,7 @@ if (-not $SkipSanitizedCsv) {
     if (-not (Test-Path $sanDir)) { New-Item -ItemType Directory -Force -Path $sanDir | Out-Null }
     $sanPath = Join-Path $sanDir ([IO.Path]::GetFileNameWithoutExtension($Source) + '.sanitized.csv')
     $rows |
-        Select-Object $COL_DATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON |
+        Select-Object $COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON |
         Export-Csv -LiteralPath $sanPath -NoTypeInformation -Encoding utf8
     Write-Host ("Sanitized copy: {0}" -f $sanPath) -ForegroundColor DarkGray
 }
@@ -325,8 +333,17 @@ $dateIdx   = [ordered]@{}
 $cells     = @{}
 
 $badDates = 0
+$futureDates = 0
 $minDate = [datetime]::MaxValue
 $maxDate = [datetime]::MinValue
+
+# A handful of rows carry a completion date past the day the export was pulled -
+# 23 of them in V1.05, the furthest five months out. They are data-entry noise,
+# but they are NOT harmless: the dashboard anchors its date presets to the latest
+# date in the file, so one stray 2027 row silently drags the "14 Days" window into
+# a stretch of calendar with nothing in it and the dashboard opens empty. Cut
+# anything after the export's own pull date and report the count.
+$dateCeiling = (Get-Item -LiteralPath $Source).LastWriteTime.Date
 
 function Get-Index {
     param($Map, [string] $Key)
@@ -336,9 +353,10 @@ function Get-Index {
 
 foreach ($r in $rows) {
     # --- date
-    $raw = ("$($r.$COL_DATE)").Trim()
+    $raw = ("$($r.$COL_BASIS)").Trim()
     $dt = [datetime]::MinValue
     if (-not [datetime]::TryParse($raw, [ref]$dt)) { $badDates++; continue }
+    if ($dt.Date -gt $dateCeiling) { $futureDates++; continue }
     if ($dt -lt $minDate) { $minDate = $dt }
     if ($dt -gt $maxDate) { $maxDate = $dt }
     $dKey = $dt.ToString('yyyy-MM-dd')
@@ -364,10 +382,11 @@ foreach ($r in $rows) {
     if ($cells.ContainsKey($key)) { $cells[$key]++ } else { $cells[$key] = 1 }
 }
 
-$kept = $rows.Count - $badDates
-Write-Host "Rows aggregated: $kept  (dropped for unparsable date: $badDates)"
+$kept = $rows.Count - $badDates - $futureDates
+Write-Host "Date basis     : $COL_BASIS"
+Write-Host "Rows aggregated: $kept  (dropped for unparsable date: $badDates, dated after the $($dateCeiling.ToString('yyyy-MM-dd')) pull: $futureDates)"
 Write-Host "Distinct cells : $($cells.Count)"
-if ($kept -le 0) { throw "No rows had a parsable '$COL_DATE'." }
+if ($kept -le 0) { throw "No rows had a parsable '$COL_BASIS'." }
 
 # --- remap dimension indices to a stable, meaningful published order.
 # Dates MUST end up chronological: the client slices a date range by index.
@@ -412,6 +431,8 @@ $payload = [ordered]@{
     rowsRead     = $rows.Count
     rowsUsed     = $kept
     rowsDropped  = $badDates
+    rowsFuture   = $futureDates
+    dateBasis    = $COL_BASIS
     dateMin      = $minDate.ToString('yyyy-MM-dd')
     dateMax      = $maxDate.ToString('yyyy-MM-dd')
     buckets      = $BUCKETS
