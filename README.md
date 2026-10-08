@@ -292,18 +292,22 @@ populated. The exact window is always printed at the right of the filter row.
 ## Reading the dashboard
 
 - **Filters** sit in one row and scope everything below them. Presets are
-  **14 Days · 1M · 1Q · YTD · All**; the default is 14 days with
+  **14 Days · 1M · 1Q · YTD · All**; the default is **1Q** with
   `Type = Appointment`. `1M` and `1Q` are inclusive calendar months (a `1M`
   window ending Oct 7 starts Sep 8), and `YTD` runs from Jan 1 of the latest
-  year in the export.
+  year in the export. A quarter is wide enough that the charts bucket by week,
+  which is why the opening view is weekly rather than daily.
 - **Every chart has a `Table` toggle** — the accessible, copy-pasteable twin.
   The failure-reason table lists *all* categories, not just the charted top 12.
-- **"Authorization Volume and RPA Coverage Over Time" is two stacked panels, not
-  one chart with two y-axes.** Total Authorizations is a count and Percent
-  Touched is a ratio, so they get separate scales sharing a single time axis. A
-  dual-axis version would let the apparent crossover point be moved anywhere just
-  by rescaling, which is why it isn't used. One hover reads out both panels, and
-  RPA success rate is still in that chart's `Table` view and its tooltip.
+- **"Authorization Volume vs. Volume Touched by RPA" plots two counts on one
+  shared axis.** Touched is a strict subset of total, so the filled band is
+  RPA's share and **the gap between the two lines is the volume still handled
+  manually** — that gap is the thing to watch. Because both series are counts in
+  the same unit, one axis is correct here; no second y-axis is used anywhere in
+  this dashboard, since a dual-axis chart lets the apparent crossover point be
+  moved anywhere just by rescaling. Percent touched and success rate are still
+  in that chart's tooltip and its `Table` view, which also breaks out a
+  Handled Manually column.
 - **The two bottom charts deliberately ignore their own filter** so the full
   Type / Status mix stays visible while you filter the rest of the dashboard.
 - **`Patterns`** adds directional fills so series stay distinguishable without

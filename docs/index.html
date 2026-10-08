@@ -252,7 +252,7 @@ td:first-child { color: var(--ink); }
 
   <div class="card">
     <div class="chead">
-      <h2>Authorization Volume and RPA Coverage Over Time</h2>
+      <h2>Authorization Volume vs. Volume Touched by RPA</h2>
       <div class="spacer"></div>
       <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
     </div>
@@ -318,7 +318,7 @@ td:first-child { color: var(--ink); }
 
 /* ====================================================================== state */
 var D = null;
-var S = { preset: "14d", from: null, to: null, type: "Appointment", status: "__all", tex: false };
+var S = { preset: "1q", from: null, to: null, type: "Appointment", status: "__all", tex: false };
 var TABLES = {};
 
 var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
@@ -738,34 +738,34 @@ function renderKPIs(m, prev, rows, priorRange) {
   }));
 }
 
-/* ====================================================================== trend (small multiples)
-   Total Authorizations is a count and Percent Touched is a ratio, so they cannot
-   honestly share one y-axis - and giving them two y-axes is the one chart form
-   that reliably lies, because the point where the lines cross moves to wherever
-   the two scales happen to be set. Two stacked panels over ONE shared x-axis
-   answer the same question - does coverage track volume? - with no scale to rig.
-   The crosshair spans both panels so a single hover reads out both measures. */
+/* ====================================================================== trend (two counts, one axis)
+   Both series are counts of authorizations, so a single shared y-axis is correct
+   here - no second scale, nothing to rig. Touched is a strict SUBSET of total,
+   which is the whole reason this reads well as one chart: the filled band is
+   RPA's share and the space above it, up to the total line, is the manual
+   remainder. The vertical gap between the lines IS the backlog. */
 function renderTrend(tb) {
   var svg = $("trendChart");
   var rows = tb.rows;
   $("trendSub").textContent = (tb.weekly ? "Weekly" : "Daily")
-    + " — volume and coverage share one time axis but keep separate scales, so neither distorts the other."
+    + " counts on one shared axis. Touched is a subset of total, so the gap between the lines is the volume handled manually."
     + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "");
 
-  /* Total is the denominator, not a category, so it wears neutral ink rather than
-     a series hue - that also keeps series-3 meaning "Handled Manually" in the
-     chart directly above instead of two things at once. */
-  var cTot = cssVar("--ink-2"), cPct = cssVar("--series-1");
+  /* Total is the envelope rather than a category, so it wears neutral ink - that
+     also keeps the series hues meaning what they mean in the chart above. */
+  var cTot = cssVar("--ink-2"), cTch = cssVar("--series-1");
   legend($("trendLegend"), [
-    { name: "Total Authorizations", color: cTot, line: true },
-    { name: "Percent Touched by RPA", color: cPct, line: true }
+    { name: "Total Authorization Volume", color: cTot, line: true },
+    { name: "Total Touched by RPA", color: cTch, line: true }
   ]);
-  /* Success rate stays in the table: dropping a series from the plot shouldn't
-     delete the number from the page. */
+  /* The rates stay in the table: taking them off the plot shouldn't delete the
+     numbers from the page. */
   TABLES.trend = function () {
     renderTable($("trendTable"),
-      [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Touched", "% Touched", "Success Rate"],
-      rows.map(function (r) { return [longDate(r.key), fmt(r.total), fmt(r.touched), pct(r.pctTouched), pct(r.successRate)]; }));
+      [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Touched by RPA", "Handled Manually", "% Touched", "Success Rate"],
+      rows.map(function (r) {
+        return [longDate(r.key), fmt(r.total), fmt(r.touched), fmt(r.total - r.touched), pct(r.pctTouched), pct(r.successRate)];
+      }));
   };
   TABLES.trend();
 
@@ -773,84 +773,69 @@ function renderTrend(tb) {
   if (rows.length === 1) { emptyChart(svg, "Only one time bucket in range — widen the date range to see a trend."); return; }
 
   clear(svg);
-  var W = 980, H = 368, m = { t: 28, r: 54, b: 34, l: 52 };
-  var pw = W - m.l - m.r;
-  var hA = 140, gap = 44, hB = 122;        /* 28 + 140 + 44 + 122 + 34 = 368 */
-  var aTop = m.t, bTop = m.t + hA + gap;
+  var W = 980, H = 300, m = { t: 16, r: 62, b: 34, l: 56 };
+  var pw = W - m.l - m.r, ph = H - m.t - m.b;
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-  svg.setAttribute("aria-label", "Two stacked line charts sharing one time axis: "
-    + "total authorizations per period above, percent touched by RPA below");
+  svg.setAttribute("aria-label", "Line chart of total authorization volume and the subset touched by RPA, per period");
+  if (S.tex) texDefs(svg, [cTch]);
 
   var X = function (i) { return m.l + (i / (rows.length - 1)) * pw; };
 
+  /* One scale, driven by total - touched can never exceed it. */
   var maxTot = 0;
   rows.forEach(function (r) { if (r.total > maxTot) maxTot = r.total; });
-  var ns = niceScale(maxTot, 3);
-  var YA = function (v) { return aTop + hA - (v / ns.top) * hA; };
-  /* Percent axis is pinned 0-100% rather than fitted to the data, so the same
-     coverage level looks the same height whatever filter is applied. */
-  var YB = function (v) { return bTop + hB - v * hB; };
+  var ns = niceScale(maxTot, 4);
+  var Y = function (v) { return m.t + ph - (v / ns.top) * ph; };
 
-  function panel(label, top, h, ticks, Yf, tickText) {
-    ticks.forEach(function (v) {
-      svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Yf(v), y2: Yf(v), stroke: cssVar("--grid"), "stroke-width": 1 }));
-      svg.appendChild(sv("text", { x: m.l - 8, y: Yf(v) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11 }, tickText(v)));
-    });
-    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: top + h, y2: top + h, stroke: cssVar("--baseline"), "stroke-width": 1 }));
-    /* The panel title carries identity by position, which is why neither series
-       depends on color alone to be read. */
-    svg.appendChild(sv("text", { x: m.l, y: top - 9, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, label));
+  for (var tv = 0; tv <= ns.top + 1e-9; tv += ns.step) {
+    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(tv), y2: Y(tv), stroke: cssVar("--grid"), "stroke-width": 1 }));
+    svg.appendChild(sv("text", { x: m.l - 8, y: Y(tv) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11 }, fmt(tv)));
   }
+  svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
 
-  var ticksA = [];
-  for (var tv = 0; tv <= ns.top + 1e-9; tv += ns.step) ticksA.push(tv);
-  panel("Total Authorizations", aTop, hA, ticksA, YA, function (v) { return fmt(v); });
-  panel("Percent Touched by RPA", bTop, hB, [0, 0.25, 0.5, 0.75, 1], YB, function (v) { return (v * 100) + "%"; });
-
-  /* x labels once, under the lower panel - the panels share the axis */
+  /* x labels, thinned to avoid collisions */
   var every = Math.max(1, Math.ceil(rows.length / 11));
   rows.forEach(function (r, i) {
     if (i % every !== 0 && i !== rows.length - 1) return;
     svg.appendChild(sv("text", { x: X(i), y: H - 12, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 11 }, r.label));
   });
 
-  /* ---- panel A: total volume, area + line. The fill reads as "how much work
-     arrived", which is the context the rate below is measured against. */
-  var dA = "";
-  rows.forEach(function (r, i) { dA += (i ? " L" : " M") + X(i).toFixed(1) + "," + YA(r.total).toFixed(1); });
-  svg.appendChild(sv("path", {
-    d: dA + " L" + X(rows.length - 1).toFixed(1) + "," + YA(0).toFixed(1)
-       + " L" + X(0).toFixed(1) + "," + YA(0).toFixed(1) + " Z",
-    fill: cTot, opacity: 0.12, stroke: "none"
-  }));
-  svg.appendChild(sv("path", { d: dA.trim(), fill: "none", stroke: cTot, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
-  var lastA = rows[rows.length - 1];
-  svg.appendChild(sv("circle", { cx: X(rows.length - 1), cy: YA(lastA.total), r: 4.5, fill: cTot, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
-  svg.appendChild(sv("text", { x: X(rows.length - 1) + 10, y: YA(lastA.total) + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, fmt(lastA.total)));
-
-  /* ---- panel B: percent touched. Breaks the line on empty buckets rather than
-     drawing through them, so a gap stays visible as a gap. */
-  var dB = "", started = false, lastB = null;
-  rows.forEach(function (r, i) {
-    var v = r.pctTouched;
-    if (v === null || isNaN(v)) { started = false; return; }
-    dB += (started ? " L" : " M") + X(i).toFixed(1) + "," + YB(v).toFixed(1);
-    started = true; lastB = { x: X(i), y: YB(v), v: v };
-  });
-  if (dB) svg.appendChild(sv("path", { d: dB.trim(), fill: "none", stroke: cPct, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
-  if (lastB) {
-    svg.appendChild(sv("circle", { cx: lastB.x, cy: lastB.y, r: 4.5, fill: cPct, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
-    svg.appendChild(sv("text", { x: lastB.x + 10, y: lastB.y + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, pct(lastB.v, 0)));
+  function linePath(key) {
+    var d = "";
+    rows.forEach(function (r, i) { d += (i ? " L" : " M") + X(i).toFixed(1) + "," + Y(r[key]).toFixed(1); });
+    return d;
   }
+  var dTot = linePath("total"), dTch = linePath("touched");
 
-  /* ---- crosshair spanning both panels + one tooltip: the reader aims at a date */
-  var crossBot = bTop + hB;
-  var cross = sv("line", { y1: aTop, y2: crossBot, stroke: cssVar("--baseline"), "stroke-width": 1, opacity: 0 });
+  /* Touched is filled to the baseline so the band reads as "RPA's share of the
+     work". Total gets no fill - a second fill would overlap this one and turn
+     the part-of-whole relationship into mud. */
+  svg.appendChild(sv("path", {
+    d: dTch + " L" + X(rows.length - 1).toFixed(1) + "," + Y(0).toFixed(1)
+       + " L" + X(0).toFixed(1) + "," + Y(0).toFixed(1) + " Z",
+    fill: S.tex ? "url(#tex0)" : cTch, opacity: S.tex ? 0.5 : 0.18, stroke: "none"
+  }));
+  svg.appendChild(sv("path", { d: dTot.trim(), fill: "none", stroke: cTot, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  svg.appendChild(sv("path", { d: dTch.trim(), fill: "none", stroke: cTch, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+
+  /* End markers + direct labels. Touched sits at or below total, so when coverage
+     is high the two labels can land on the same pixels - nudge the lower one down
+     rather than letting them overprint. */
+  var last = rows[rows.length - 1], lx = X(rows.length - 1);
+  var yTot = Y(last.total), yTch = Y(last.touched);
+  var labTch = (yTch - yTot < 13) ? yTot + 13 : yTch;
+  [[yTot, cTot, fmt(last.total), yTot], [yTch, cTch, fmt(last.touched), labTch]].forEach(function (e) {
+    svg.appendChild(sv("circle", { cx: lx, cy: e[0], r: 4.5, fill: e[1], stroke: cssVar("--surface-1"), "stroke-width": 2 }));
+    svg.appendChild(sv("text", { x: lx + 10, y: e[3] + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, e[2]));
+  });
+
+  /* crosshair + one tooltip listing both series: the reader aims at a date */
+  var cross = sv("line", { y1: m.t, y2: m.t + ph, stroke: cssVar("--baseline"), "stroke-width": 1, opacity: 0 });
   svg.appendChild(cross);
-  var dotA = sv("circle", { r: 4.5, fill: cTot, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
-  var dotB = sv("circle", { r: 4.5, fill: cPct, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
-  svg.appendChild(dotA); svg.appendChild(dotB);
-  var hit = sv("rect", { x: m.l, y: aTop, width: pw, height: crossBot - aTop, fill: "transparent", style: "cursor:crosshair" });
+  var dotT = sv("circle", { r: 4.5, fill: cTot, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
+  var dotC = sv("circle", { r: 4.5, fill: cTch, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
+  svg.appendChild(dotT); svg.appendChild(dotC);
+  var hit = sv("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent", style: "cursor:crosshair" });
   svg.appendChild(hit);
 
   function at(ev) {
@@ -860,20 +845,20 @@ function renderTrend(tb) {
     i = Math.max(0, Math.min(rows.length - 1, i));
     var r = rows[i];
     cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity", 1);
-    dotA.setAttribute("cx", X(i)); dotA.setAttribute("cy", YA(r.total)); dotA.setAttribute("opacity", 1);
-    if (r.pctTouched === null || isNaN(r.pctTouched)) { dotB.setAttribute("opacity", 0); }
-    else { dotB.setAttribute("cx", X(i)); dotB.setAttribute("cy", YB(r.pctTouched)); dotB.setAttribute("opacity", 1); }
+    dotT.setAttribute("cx", X(i)); dotT.setAttribute("cy", Y(r.total)); dotT.setAttribute("opacity", 1);
+    dotC.setAttribute("cx", X(i)); dotC.setAttribute("cy", Y(r.touched)); dotC.setAttribute("opacity", 1);
     tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), [
-      { name: "Total Authorizations", value: fmt(r.total), color: cTot },
-      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: cPct },
-      { name: "RPA Success Rate", value: pct(r.successRate), color: null },
-      { name: "Touched / Failed", value: fmt(r.touched) + " / " + fmt(r.fail), color: null }
+      { name: "Total Authorization Volume", value: fmt(r.total), color: cTot },
+      { name: "Total Touched by RPA", value: fmt(r.touched), color: cTch },
+      { name: "Handled Manually", value: fmt(r.total - r.touched), color: null },
+      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: null },
+      { name: "RPA Success Rate", value: pct(r.successRate), color: null }
     ]);
   }
   hit.addEventListener("pointermove", at);
   hit.addEventListener("pointerleave", function () {
     cross.setAttribute("opacity", 0);
-    dotA.setAttribute("opacity", 0); dotB.setAttribute("opacity", 0);
+    dotT.setAttribute("opacity", 0); dotC.setAttribute("opacity", 0);
     tipHide();
   });
 }
