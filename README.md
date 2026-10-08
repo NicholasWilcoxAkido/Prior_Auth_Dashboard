@@ -22,7 +22,25 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
+## ⚠️ Read this before you push anything
 
+The raw export is **not** safe to publish. `Bot Run Fail Reason` carries member
+identifiers and authorization numbers inside the error text, and `RC Assigned`
+carries coordinator full names and user IDs. The shapes to watch for, written
+here with **invented** values — every example in this file is synthetic, never
+copied from an export:
+
+```
+The Referral is already submitted Member ID: <11-digit number>
+Member Id is not found-<digits + letter + digits>
+There is a previous authorization on file.The authorization number is: A<8 digits>
+<First Last> <First Last> <8 digits>.<4 chars>
+```
+
+Member IDs are HIPAA identifiers. Publishing them to a public GitHub Pages site
+is effectively irreversible — crawlers and CDN caches retain content even after a
+force-push or repo deletion. That applies to this README too: **do not paste real
+error text into it** when adding a rule. Describe the pattern instead.
 
 ### PPI is removed at ingest
 
@@ -35,26 +53,27 @@ flag to turn it off.
 every blank becomes `(unassigned)`. Names and user IDs are discarded, not masked
 — the dashboard only ever needed "bot or not":
 
-| Raw value | Becomes |
+| Raw value (shape only) | Becomes |
 |---|---|
-| `svc-quickbase svc-quickbase xxxxxxxxx` | `svc-quickbase` |
-| `Jane Doe Jane Doe xxxxxxxxxxxxxxx` | `(human)` |
+| `svc-quickbase svc-quickbase <SERVICE-ACCOUNT-ID>` | `svc-quickbase` |
+| `<First Last> <First Last> <USER-ID>` | `(human)` |
 | *(empty)* | `(unassigned)` |
 
 **`Bot Run Fail Reason`** is redacted in place. Dates become `[date]`, people
 become `[name]`, and identifiers become `[id]`:
 
 ```
-Member Id is not found-xxxxxxxxx         ->  Member Id is not found-[id]
-The authorization number is: xxxxxxxx    ->  The authorization number is: [id]
-Due date 10/14/2025 expired               ->  Due date [date] expired
+Member Id is not found-<ID>            ->  Member Id is not found-[id]
+The authorization number is: <ID>      ->  The authorization number is: [id]
+Due date <MM/DD/YYYY> expired          ->  Due date [date] expired
 ```
 
 The name list is **harvested from the file's own `RC Assigned` column** on every
 run, so it stays current as staff change — there is no roster to maintain by
 hand. Redaction order matters: digits glued to a word are stripped before the
-whole-token rule, so `matches162733` becomes `matches[id]` rather than bare
-`[id]`, and the failure-category rules below still match.
+whole-token rule, so a token like `matches` followed immediately by a digit run
+becomes `matches[id]` rather than bare `[id]`, which keeps the
+failure-category rules below matching.
 
 A PPI-free row-level copy is written to
 `sanitized/<name>.sanitized.csv` so you can inspect or share the data without
@@ -279,6 +298,12 @@ populated. The exact window is always printed at the right of the filter row.
   year in the export.
 - **Every chart has a `Table` toggle** — the accessible, copy-pasteable twin.
   The failure-reason table lists *all* categories, not just the charted top 12.
+- **"Authorization Volume and RPA Coverage Over Time" is two stacked panels, not
+  one chart with two y-axes.** Total Authorizations is a count and Percent
+  Touched is a ratio, so they get separate scales sharing a single time axis. A
+  dual-axis version would let the apparent crossover point be moved anywhere just
+  by rescaling, which is why it isn't used. One hover reads out both panels, and
+  RPA success rate is still in that chart's `Table` view and its tooltip.
 - **The two bottom charts deliberately ignore their own filter** so the full
   Type / Status mix stays visible while you filter the rest of the dashboard.
 - **`Patterns`** adds directional fills so series stay distinguishable without

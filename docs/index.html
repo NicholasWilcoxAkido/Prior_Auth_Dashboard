@@ -252,7 +252,7 @@ td:first-child { color: var(--ink); }
 
   <div class="card">
     <div class="chead">
-      <h2>RPA Coverage and Success Rate Over Time</h2>
+      <h2>Authorization Volume and RPA Coverage Over Time</h2>
       <div class="spacer"></div>
       <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
     </div>
@@ -738,21 +738,33 @@ function renderKPIs(m, prev, rows, priorRange) {
   }));
 }
 
-/* ====================================================================== trend (lines) */
+/* ====================================================================== trend (small multiples)
+   Total Authorizations is a count and Percent Touched is a ratio, so they cannot
+   honestly share one y-axis - and giving them two y-axes is the one chart form
+   that reliably lies, because the point where the lines cross moves to wherever
+   the two scales happen to be set. Two stacked panels over ONE shared x-axis
+   answer the same question - does coverage track volume? - with no scale to rig.
+   The crosshair spans both panels so a single hover reads out both measures. */
 function renderTrend(tb) {
   var svg = $("trendChart");
   var rows = tb.rows;
   $("trendSub").textContent = (tb.weekly ? "Weekly" : "Daily")
-    + " — both series are percentages on a single 0–100% axis."
+    + " — volume and coverage share one time axis but keep separate scales, so neither distorts the other."
     + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "");
 
-  var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
+  /* Total is the denominator, not a category, so it wears neutral ink rather than
+     a series hue - that also keeps series-3 meaning "Handled Manually" in the
+     chart directly above instead of two things at once. */
+  var cTot = cssVar("--ink-2"), cPct = cssVar("--series-1");
   legend($("trendLegend"), [
-    { name: "Percent Touched by RPA", color: c1, line: true },
-    { name: "RPA Success Rate", color: c2, line: true }
+    { name: "Total Authorizations", color: cTot, line: true },
+    { name: "Percent Touched by RPA", color: cPct, line: true }
   ]);
+  /* Success rate stays in the table: dropping a series from the plot shouldn't
+     delete the number from the page. */
   TABLES.trend = function () {
-    renderTable($("trendTable"), [tb.weekly ? "Week Of" : "Date", "Total", "Touched", "% Touched", "Success Rate"],
+    renderTable($("trendTable"),
+      [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Touched", "% Touched", "Success Rate"],
       rows.map(function (r) { return [longDate(r.key), fmt(r.total), fmt(r.touched), pct(r.pctTouched), pct(r.successRate)]; }));
   };
   TABLES.trend();
@@ -761,60 +773,84 @@ function renderTrend(tb) {
   if (rows.length === 1) { emptyChart(svg, "Only one time bucket in range — widen the date range to see a trend."); return; }
 
   clear(svg);
-  var W = 980, H = 300, m = { t: 14, r: 54, b: 34, l: 44 };
-  var pw = W - m.l - m.r, ph = H - m.t - m.b;
+  var W = 980, H = 368, m = { t: 28, r: 54, b: 34, l: 52 };
+  var pw = W - m.l - m.r;
+  var hA = 140, gap = 44, hB = 122;        /* 28 + 140 + 44 + 122 + 34 = 368 */
+  var aTop = m.t, bTop = m.t + hA + gap;
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-  svg.setAttribute("aria-label", "Line chart of percent touched by RPA and RPA success rate over time");
+  svg.setAttribute("aria-label", "Two stacked line charts sharing one time axis: "
+    + "total authorizations per period above, percent touched by RPA below");
 
-  var X = function (i) { return m.l + (rows.length === 1 ? pw / 2 : (i / (rows.length - 1)) * pw); };
-  var Y = function (v) { return m.t + ph - v * ph; };
+  var X = function (i) { return m.l + (i / (rows.length - 1)) * pw; };
 
-  /* gridlines: solid hairlines, one step off surface, recessive */
-  [0, 0.25, 0.5, 0.75, 1].forEach(function (v) {
-    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: cssVar("--grid"), "stroke-width": 1 }));
-    svg.appendChild(sv("text", { x: m.l - 8, y: Y(v) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11 }, (v * 100) + "%"));
-  });
-  svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
+  var maxTot = 0;
+  rows.forEach(function (r) { if (r.total > maxTot) maxTot = r.total; });
+  var ns = niceScale(maxTot, 3);
+  var YA = function (v) { return aTop + hA - (v / ns.top) * hA; };
+  /* Percent axis is pinned 0-100% rather than fitted to the data, so the same
+     coverage level looks the same height whatever filter is applied. */
+  var YB = function (v) { return bTop + hB - v * hB; };
 
-  /* x labels, thinned to avoid collisions */
+  function panel(label, top, h, ticks, Yf, tickText) {
+    ticks.forEach(function (v) {
+      svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Yf(v), y2: Yf(v), stroke: cssVar("--grid"), "stroke-width": 1 }));
+      svg.appendChild(sv("text", { x: m.l - 8, y: Yf(v) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11 }, tickText(v)));
+    });
+    svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: top + h, y2: top + h, stroke: cssVar("--baseline"), "stroke-width": 1 }));
+    /* The panel title carries identity by position, which is why neither series
+       depends on color alone to be read. */
+    svg.appendChild(sv("text", { x: m.l, y: top - 9, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, label));
+  }
+
+  var ticksA = [];
+  for (var tv = 0; tv <= ns.top + 1e-9; tv += ns.step) ticksA.push(tv);
+  panel("Total Authorizations", aTop, hA, ticksA, YA, function (v) { return fmt(v); });
+  panel("Percent Touched by RPA", bTop, hB, [0, 0.25, 0.5, 0.75, 1], YB, function (v) { return (v * 100) + "%"; });
+
+  /* x labels once, under the lower panel - the panels share the axis */
   var every = Math.max(1, Math.ceil(rows.length / 11));
   rows.forEach(function (r, i) {
     if (i % every !== 0 && i !== rows.length - 1) return;
     svg.appendChild(sv("text", { x: X(i), y: H - 12, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 11 }, r.label));
   });
 
-  var series = [
-    { key: "pctTouched", color: c1, name: "% touched" },
-    { key: "successRate", color: c2, name: "Success rate" }
-  ];
-  series.forEach(function (s) {
-    var d = "", started = false, lastPt = null;
-    rows.forEach(function (r, i) {
-      var v = r[s.key];
-      if (v === null || isNaN(v)) { started = false; return; }
-      d += (started ? " L" : " M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
-      started = true; lastPt = { x: X(i), y: Y(v), v: v };
-    });
-    if (d) svg.appendChild(sv("path", { d: d.trim(), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
-    if (lastPt) {
-      /* end marker: >=8px with a 2px surface ring */
-      svg.appendChild(sv("circle", { cx: lastPt.x, cy: lastPt.y, r: 4.5, fill: s.color, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
-      /* direct end label in text ink, never the series color */
-      svg.appendChild(sv("text", {
-        x: lastPt.x + 10, y: lastPt.y + 4, fill: cssVar("--ink"),
-        "font-size": 11.5, "font-weight": 600
-      }, pct(lastPt.v, 0)));
-    }
-  });
+  /* ---- panel A: total volume, area + line. The fill reads as "how much work
+     arrived", which is the context the rate below is measured against. */
+  var dA = "";
+  rows.forEach(function (r, i) { dA += (i ? " L" : " M") + X(i).toFixed(1) + "," + YA(r.total).toFixed(1); });
+  svg.appendChild(sv("path", {
+    d: dA + " L" + X(rows.length - 1).toFixed(1) + "," + YA(0).toFixed(1)
+       + " L" + X(0).toFixed(1) + "," + YA(0).toFixed(1) + " Z",
+    fill: cTot, opacity: 0.12, stroke: "none"
+  }));
+  svg.appendChild(sv("path", { d: dA.trim(), fill: "none", stroke: cTot, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  var lastA = rows[rows.length - 1];
+  svg.appendChild(sv("circle", { cx: X(rows.length - 1), cy: YA(lastA.total), r: 4.5, fill: cTot, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
+  svg.appendChild(sv("text", { x: X(rows.length - 1) + 10, y: YA(lastA.total) + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, fmt(lastA.total)));
 
-  /* crosshair + one tooltip listing every series: the reader aims at a date */
-  var cross = sv("line", { y1: m.t, y2: m.t + ph, stroke: cssVar("--baseline"), "stroke-width": 1, opacity: 0 });
-  svg.appendChild(cross);
-  var dots = series.map(function (s) {
-    var c = sv("circle", { r: 4.5, fill: s.color, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
-    svg.appendChild(c); return c;
+  /* ---- panel B: percent touched. Breaks the line on empty buckets rather than
+     drawing through them, so a gap stays visible as a gap. */
+  var dB = "", started = false, lastB = null;
+  rows.forEach(function (r, i) {
+    var v = r.pctTouched;
+    if (v === null || isNaN(v)) { started = false; return; }
+    dB += (started ? " L" : " M") + X(i).toFixed(1) + "," + YB(v).toFixed(1);
+    started = true; lastB = { x: X(i), y: YB(v), v: v };
   });
-  var hit = sv("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent", style: "cursor:crosshair" });
+  if (dB) svg.appendChild(sv("path", { d: dB.trim(), fill: "none", stroke: cPct, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  if (lastB) {
+    svg.appendChild(sv("circle", { cx: lastB.x, cy: lastB.y, r: 4.5, fill: cPct, stroke: cssVar("--surface-1"), "stroke-width": 2 }));
+    svg.appendChild(sv("text", { x: lastB.x + 10, y: lastB.y + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, pct(lastB.v, 0)));
+  }
+
+  /* ---- crosshair spanning both panels + one tooltip: the reader aims at a date */
+  var crossBot = bTop + hB;
+  var cross = sv("line", { y1: aTop, y2: crossBot, stroke: cssVar("--baseline"), "stroke-width": 1, opacity: 0 });
+  svg.appendChild(cross);
+  var dotA = sv("circle", { r: 4.5, fill: cTot, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
+  var dotB = sv("circle", { r: 4.5, fill: cPct, stroke: cssVar("--surface-1"), "stroke-width": 2, opacity: 0 });
+  svg.appendChild(dotA); svg.appendChild(dotB);
+  var hit = sv("rect", { x: m.l, y: aTop, width: pw, height: crossBot - aTop, fill: "transparent", style: "cursor:crosshair" });
   svg.appendChild(hit);
 
   function at(ev) {
@@ -824,22 +860,20 @@ function renderTrend(tb) {
     i = Math.max(0, Math.min(rows.length - 1, i));
     var r = rows[i];
     cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity", 1);
-    series.forEach(function (s, k) {
-      var v = r[s.key];
-      if (v === null || isNaN(v)) { dots[k].setAttribute("opacity", 0); return; }
-      dots[k].setAttribute("cx", X(i)); dots[k].setAttribute("cy", Y(v)); dots[k].setAttribute("opacity", 1);
-    });
+    dotA.setAttribute("cx", X(i)); dotA.setAttribute("cy", YA(r.total)); dotA.setAttribute("opacity", 1);
+    if (r.pctTouched === null || isNaN(r.pctTouched)) { dotB.setAttribute("opacity", 0); }
+    else { dotB.setAttribute("cx", X(i)); dotB.setAttribute("cy", YB(r.pctTouched)); dotB.setAttribute("opacity", 1); }
     tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), [
-      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: c1 },
-      { name: "RPA Success Rate", value: pct(r.successRate), color: c2 },
-      { name: "Total Authorizations", value: fmt(r.total), color: null },
+      { name: "Total Authorizations", value: fmt(r.total), color: cTot },
+      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: cPct },
+      { name: "RPA Success Rate", value: pct(r.successRate), color: null },
       { name: "Touched / Failed", value: fmt(r.touched) + " / " + fmt(r.fail), color: null }
     ]);
   }
   hit.addEventListener("pointermove", at);
   hit.addEventListener("pointerleave", function () {
     cross.setAttribute("opacity", 0);
-    dots.forEach(function (d) { d.setAttribute("opacity", 0); });
+    dotA.setAttribute("opacity", 0); dotB.setAttribute("opacity", 0);
     tipHide();
   });
 }

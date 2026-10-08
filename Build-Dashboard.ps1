@@ -146,10 +146,13 @@ function Protect-Text {
     }
 
     # Identifiers. Order matters: strip digits glued to letters BEFORE the
-    # whole-token rule, so 'matches162733' becomes 'matches[id]' and not '[id]'.
+    # whole-token rule, so 'word' + digit-run becomes 'word[id]' and not '[id]'.
     # Losing the word would break failure-category matching below.
-    $v = [regex]::Replace($v, '(?<=[A-Za-z])\d{3,}', '[id]')     # ...search40032147501
-    $v = [regex]::Replace($v, '\b\d{3,}', '[id]')                # 40055557501, 93277327A
+    #
+    # Examples are deliberately written as shapes, not real values - this file is
+    # published to a public repo, so a pasted sample ID would defeat the point.
+    $v = [regex]::Replace($v, '(?<=[A-Za-z])\d{3,}', '[id]')     # trailing digits glued to a word
+    $v = [regex]::Replace($v, '\b\d{3,}', '[id]')                # standalone digit runs
     # Leftover mixed alphanumeric codes (both a letter and a digit, 6+ chars).
     $v = [regex]::Replace($v, '\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{6,}\b', '[id]')
 
@@ -159,6 +162,13 @@ function Protect-Text {
 }
 
 $sanBot = 0; $sanHuman = 0; $sanBlank = 0; $sanReasons = 0
+
+# Every identifier-shaped token seen in the RAW reason text, captured here
+# because sanitization overwrites the column in place - after this loop the real
+# values are gone. The repo gate below needs them to prove no publishable file
+# quotes one.
+$exportIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
 foreach ($r in $rows) {
     $rc = "$($r.$COL_RC)"
     if ($rc -imatch 'svc-quickbase')           { $r.$COL_RC = 'svc-quickbase'; $sanBot++ }
@@ -167,6 +177,9 @@ foreach ($r in $rows) {
 
     $raw = "$($r.$COL_FREASON)"
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        foreach ($m in [regex]::Matches($raw, '\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,}\b')) {
+            [void]$exportIds.Add($m.Value)
+        }
         $clean = Protect-Text -Value $raw
         if ($clean -ne (($raw -replace '\s+', ' ').Trim())) { $sanReasons++ }
         $r.$COL_FREASON = $clean
@@ -450,6 +463,49 @@ if ($leaks.Count) {
     throw "Potential identifiers survived normalization. Add a rule to `$REASON_RULES for the pattern(s) above, then re-run."
 }
 Write-Host "Publish gate: no identifier-like text in $($reasonIdx.Count) reason categories." -ForegroundColor DarkGray
+
+# ------------------------------------------------- repo gate (documentation too)
+# data.json is not the only thing that gets pushed. Documenting a new failure
+# category is a natural moment to paste a real error message into README.md or
+# into a comment here - and a real error message carries a real member ID. This
+# scan compares every publishable file against the identifiers that actually
+# exist in THIS export, so it cannot fire on ordinary prose or on the counts and
+# pixel sizes that legitimately contain digit runs.
+# $exportIds was captured during the sanitize stage, before the raw values were
+# overwritten - harvesting it here would scan already-redacted text and produce
+# an empty set, making this whole gate silently vacuous.
+if ($exportIds.Count -eq 0) {
+    throw "Repo gate has nothing to check - `$exportIds is empty. The capture in the sanitize stage is broken; fix it rather than shipping a gate that always passes."
+}
+# Single-word name parts only; multi-word forms are covered by their parts.
+$nameParts = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($n in $personNames) {
+    if ($n.Length -ge 4 -and $n -notmatch '[\s,]') { [void]$nameParts.Add($n) }
+}
+
+$repoFiles = @('README.md', 'Build-Dashboard.ps1', 'Serve-Dashboard.ps1', '.gitignore') |
+    ForEach-Object { Join-Path $root $_ }
+$repoFiles += $OutFile
+$repoFiles += (Join-Path $root 'docs\index.html')
+
+$repoLeaks = @()
+foreach ($f in $repoFiles) {
+    if (-not (Test-Path -LiteralPath $f)) { continue }
+    $txt = [IO.File]::ReadAllText($f)
+    $name = Split-Path -Leaf $f
+    foreach ($m in [regex]::Matches($txt, '\b[A-Za-z0-9]{4,}\b')) {
+        $tok = $m.Value
+        if ($exportIds.Contains($tok)) { $repoLeaks += "${name}: export identifier '$tok'" }
+        elseif ($nameParts.Contains($tok)) { $repoLeaks += "${name}: coordinator name '$tok'" }
+    }
+}
+if ($repoLeaks.Count) {
+    Write-Host ""
+    Write-Host "REPO GATE FAILED - a publishable file contains real export data." -ForegroundColor Red
+    $repoLeaks | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    throw "Replace the value(s) above with a described shape (e.g. '<11-digit number>'), then re-run. Never paste raw error text into a published file."
+}
+Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms." -f $repoFiles.Count, $exportIds.Count, $nameParts.Count) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------- console summary
 $apptIdx = [array]::IndexOf($typeOrder, 'Appointment')
