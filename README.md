@@ -22,26 +22,6 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
-## ⚠️ Read this before you push anything
-
-The raw export is **not** safe to publish. `Bot Run Fail Reason` carries member
-identifiers and authorization numbers inside the error text, and `RC Assigned`
-carries coordinator full names and user IDs. The shapes to watch for, written
-here with **invented** values — every example in this file is synthetic, never
-copied from an export:
-
-```
-The Referral is already submitted Member ID: <11-digit number>
-Member Id is not found-<digits + letter + digits>
-There is a previous authorization on file.The authorization number is: A<8 digits>
-<First Last> <First Last> <8 digits>.<4 chars>
-```
-
-Member IDs are HIPAA identifiers. Publishing them to a public GitHub Pages site
-is effectively irreversible — crawlers and CDN caches retain content even after a
-force-push or repo deletion. That applies to this README too: **do not paste real
-error text into it** when adding a rule. Describe the pattern instead.
-
 ### PPI is removed at ingest
 
 The build strips identifiers **first**, before normalizing or aggregating
