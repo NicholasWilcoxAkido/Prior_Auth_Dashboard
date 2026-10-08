@@ -115,14 +115,14 @@ When a new export arrives:
 2. Run the build:
 
    ```powershell
-   .\Build-Dashboard.ps1 -Source "Orders_and_Appointments.V1.02.csv"
+   .\Build-Dashboard.ps1 -Source "Orders_and_Appointments_V1.03.csv"
    ```
 
    It prints what it redacted and the headline metrics, so you can
    sanity-check both before publishing:
 
    ```
-   Sanitized: RC Assigned -> 13382 bot / 91760 human / 0 unassigned
+   Sanitized: RC Assigned -> 13376 bot / 91759 human / 0 unassigned
               (67 coordinator names discarded)
    Sanitized: 834 fail reasons had names/identifiers redacted
    Publish gate: no identifier-like text in 40 reason categories
@@ -264,17 +264,17 @@ without the sanitize stage.)
 `svc-quickbase` assignment and a `Bot Run Fail Date`. Summing the two counts
 would double-count them, so "touched" uses the de-duplicated union. These rows
 are treated as **bot failed, then succeeded on retry** — they count as touched
-*and* as successes. Across the full V1.02 export:
+*and* as successes. Across the full V1.03 export:
 
 ```
-12,789  bot succeeded
+12,783  bot succeeded
    463  bot succeeded after a retry
- 5,016  bot failed
+ 5,013  bot failed
 ------
-18,268  touched by RPA   (not 18,731 — that figure double-counts the 463)
+18,259  touched by RPA   (not 18,722 — that figure double-counts the 463)
 ```
 
-This makes all-time coverage 30.4% rather than 31.2%, and success rate 72.5%.
+This makes all-time coverage 30.4% rather than 31.2%, and success rate 72.6%.
 
 **A delta is only shown when the comparison period is fully present.** The
 ▲▼ figures compare against the preceding window of equal length. If that window
