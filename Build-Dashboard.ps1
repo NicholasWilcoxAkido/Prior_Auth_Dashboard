@@ -219,44 +219,63 @@ function Normalize-Status {
     }
 }
 
-# Collapse 247 raw fail strings into stable categories AND strip embedded
-# member IDs / auth numbers. Order matters: first match wins.
+# Collapse the raw fail strings into stable categories AND strip embedded
+# member IDs / auth numbers. Order matters: FIRST MATCH WINS, so a broad rule
+# placed early will starve the specific rules below it.
+#
+# When a new export pushes 'Other / unclassified' up the chart, add rules here -
+# that bucket is the designated signal, not a problem to ignore. The V1.02
+# export introduced ~10 new message shapes (marked NEW below).
 $REASON_RULES = @(
     @{ Pattern = 'referral is already submitted';                 Label = 'Referral already submitted' }
-    @{ Pattern = 'previous authorization on file';                Label = 'Previous authorization on file' }
+    @{ Pattern = 'previous auth(orization)? on file';             Label = 'Previous authorization on file' }
     @{ Pattern = 'patient not found in referral status search';   Label = 'Patient not found in referral status search' }
-    @{ Pattern = 'could not find the (user-interface \(ui\)|ui) element'; Label = 'UI element not found' }
+    @{ Pattern = 'could not find the (user-interface \(ui\)|ui) element'; Label = 'UI element not found / invalid' }
+    # NEW - an ambiguous selector is a different bot defect from a missing one,
+    # so it gets its own category rather than folding into 'not found'.
+    @{ Pattern = 'could not uniquely identify|multiple similar matches found'; Label = 'UI element ambiguous' }
+    @{ Pattern = 'ui element is invalid|target element did not appear'; Label = 'UI element not found / invalid' }  # NEW
     @{ Pattern = 'cannot select item';                            Label = 'Cannot select item in list' }
     @{ Pattern = 'cannot bring the target application';           Label = 'Cannot focus target application' }
     @{ Pattern = 'windows session (is locked|was disconnected)';  Label = 'Windows session locked / disconnected' }
     @{ Pattern = 'type activity verification failed';             Label = 'Type activity verification failed' }
     @{ Pattern = 'input row count is not match';                  Label = 'Input row count mismatch' }
     @{ Pattern = 'due date expired';                              Label = 'Due date expired' }
-    @{ Pattern = 'member id (is )?not (found|match)';             Label = 'Member ID not found / mismatch' }
+    @{ Pattern = 'member id (is )?not (found|match)|data not available for this member id'; Label = 'Member ID not found / mismatch' }
     @{ Pattern = 'member is not eligible';                        Label = 'Member not eligible' }
     @{ Pattern = 'provider (not|is not|address|adress)|unable to find (the )?provider'; Label = 'Provider not found / not matched' }
     @{ Pattern = 'servicing provider';                            Label = 'Servicing provider issue' }
     @{ Pattern = 'supervising physician is empty';                Label = 'Supervising physician empty' }
-    @{ Pattern = 'facility not matched';                          Label = 'Facility not matched' }
+    # NEW - sits AFTER the servicing-provider rule on purpose, so the ~250
+    # 'Unable to find Servicing Provider ...' rows keep their own category
+    # instead of being swallowed by this broader provider phrasing.
+    @{ Pattern = 'unable to (select|find) (the )?(referral|referring) provider|unable to select provider|provider details not found|out-of-network provider|(referring|supervision) provider is empty'; Label = 'Provider not found / not matched' }
+    @{ Pattern = 'facility\s*(location)?\s*not\s*match';          Label = 'Facility not matched' }
     @{ Pattern = 'document not signed';                           Label = 'Document not signed' }
-    @{ Pattern = 'speciality not present|specialty not present';  Label = 'Specialty not present' }
+    @{ Pattern = 'special(i)?ty\s+not\s+(present|match)|unable to find the special(i)?ty'; Label = 'Specialty not found / not matched' }
     @{ Pattern = 'no icd found|icd is empty|unable to find icd';  Label = 'ICD missing' }
-    @{ Pattern = 'invalid cpt';                                   Label = 'Invalid CPT' }
+    @{ Pattern = 'invalid cpt|no services were found that match the cpt'; Label = 'CPT not found / invalid' }
     @{ Pattern = 'activity timeout exceeded|timeout reached';     Label = 'Timeout' }
     @{ Pattern = 'utilization management workflow';               Label = 'Routed to UM workflow' }
     @{ Pattern = 'canceled iehp';                                 Label = 'Canceled in IEHP' }
+    @{ Pattern = 'request got (denied|cancelled)|(is|got) cancelled'; Label = 'Request cancelled by payer' }  # NEW
     @{ Pattern = 'value does not fall within the expected range'; Label = 'Value out of expected range' }
     @{ Pattern = 'target element is disabled|button is not enabled|is not enabled'; Label = 'Control disabled / not enabled' }
     @{ Pattern = 'cannot communicate with the browser|uipath extension'; Label = 'Browser automation extension issue' }
     @{ Pattern = 'outside of screen bounds';                      Label = 'Element outside screen bounds' }
-    @{ Pattern = 'element was not found|unable to find the searched element'; Label = 'UI element not found' }
+    @{ Pattern = 'element was not found|unable to find the searched element'; Label = 'UI element not found / invalid' }
     @{ Pattern = 'not recognized as a valid datetime';            Label = 'Invalid date value' }
     @{ Pattern = 'patient not found in capella';                  Label = 'Patient not found in Capella' }
     @{ Pattern = 'no authorization letter data';                  Label = 'No authorization letter data' }
     @{ Pattern = 'no reference number|referral reference not found'; Label = 'Reference number missing' }
     @{ Pattern = 'issue with optum portal';                       Label = 'Optum portal issue' }
+    @{ Pattern = 'port(a|e)l exception';                          Label = 'Payer portal exception' }      # NEW
     @{ Pattern = 'unable to find servicing lab location';         Label = 'Servicing lab location not found' }
     @{ Pattern = 'exception from medpoint';                       Label = 'Medpoint exception' }
+    # NEW - bot-side data problems, not payer problems. Worth separating because
+    # the fix lives in the automation, not the portal.
+    @{ Pattern = 'does not belong to table|contains no datarows|sequence contains no elements'; Label = 'Input data / schema error' }
+    @{ Pattern = 'cannot access the file';                        Label = 'File locked by another process' }  # NEW
 )
 
 # The published label set is CLOSED: every value returned here is either one of

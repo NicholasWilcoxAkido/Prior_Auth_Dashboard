@@ -203,7 +203,7 @@ td:first-child { color: var(--ink); }
 <div class="wrap">
 
   <div class="head">
-    <h1>Prior Auth &mdash; RPA Performance</h1>
+    <h1>Prior Authorization &mdash; RPA Performance</h1>
     <div class="spacer"></div>
     <div class="sub" id="freshness"></div>
     <button class="tbtn" id="texToggle" aria-pressed="false" title="Adds directional patterns to fills so series stay distinguishable without color">Patterns</button>
@@ -240,19 +240,7 @@ td:first-child { color: var(--ink); }
 
   <div class="card">
     <div class="chead">
-      <h2>RPA coverage and success rate over time</h2>
-      <div class="spacer"></div>
-      <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
-    </div>
-    <p class="csub" id="trendSub"></p>
-    <div class="legend" id="trendLegend"></div>
-    <div class="chartbox"><svg class="chart" id="trendChart" role="img"></svg></div>
-    <div class="tableview" id="trendTable"></div>
-  </div>
-
-  <div class="card">
-    <div class="chead">
-      <h2>Volume by how each auth was handled</h2>
+      <h2>Volume by How Each Authorization Was Handled</h2>
       <div class="spacer"></div>
       <button class="tbtn" data-table="vol" aria-pressed="false">Table</button>
     </div>
@@ -264,7 +252,19 @@ td:first-child { color: var(--ink); }
 
   <div class="card">
     <div class="chead">
-      <h2>Top bot failure reasons</h2>
+      <h2>RPA Coverage and Success Rate Over Time</h2>
+      <div class="spacer"></div>
+      <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
+    </div>
+    <p class="csub" id="trendSub"></p>
+    <div class="legend" id="trendLegend"></div>
+    <div class="chartbox"><svg class="chart" id="trendChart" role="img"></svg></div>
+    <div class="tableview" id="trendTable"></div>
+  </div>
+
+  <div class="card">
+    <div class="chead">
+      <h2>Top Bot Failure Reasons</h2>
       <div class="spacer"></div>
       <button class="tbtn" data-table="reason" aria-pressed="false">Table</button>
     </div>
@@ -276,7 +276,7 @@ td:first-child { color: var(--ink); }
   <div class="grid2">
     <div class="card">
       <div class="chead">
-        <h2>Volume by type</h2>
+        <h2>Volume by Type</h2>
         <div class="spacer"></div>
         <button class="tbtn" data-table="type" aria-pressed="false">Table</button>
       </div>
@@ -286,7 +286,7 @@ td:first-child { color: var(--ink); }
     </div>
     <div class="card">
       <div class="chead">
-        <h2>Volume by coordinator status</h2>
+        <h2>Volume by Coordinator Status</h2>
         <div class="spacer"></div>
         <button class="tbtn" data-table="status" aria-pressed="false">Table</button>
       </div>
@@ -297,12 +297,12 @@ td:first-child { color: var(--ink); }
   </div>
 
   <div class="foot">
-    <h3>How these numbers are defined</h3>
+    <h3>How These Numbers Are Defined</h3>
     <ul>
-      <li><strong>Total auths</strong> &mdash; rows matching the current Type, Status and date filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Total Authorizations</strong> &mdash; rows matching the current Type, Status and date filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
       <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
-      <li><strong>RPA success rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
-      <li><strong>Date presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
+      <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
+      <li><strong>Date Presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
       <li>Failure reasons are normalized into categories; member and authorization identifiers present in the raw text are stripped before publishing, and only aggregate counts are shipped.</li>
     </ul>
     <div id="provenance"></div>
@@ -318,18 +318,28 @@ td:first-child { color: var(--ink); }
 
 /* ====================================================================== state */
 var D = null;
-var S = { preset: "7d", from: null, to: null, type: "Appointment", status: "__all", tex: false };
+var S = { preset: "14d", from: null, to: null, type: "Appointment", status: "__all", tex: false };
 var TABLES = {};
 
 var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
 
 var PRESETS = [
-  { id: "7d",  label: "7 days",  days: 7 },
-  { id: "30d", label: "30 days", days: 30 },
-  { id: "90d", label: "90 days", days: 90 },
-  { id: "mtd", label: "MTD",     days: null },
-  { id: "all", label: "All",     days: null }
+  { id: "14d", label: "14 Days", days: 14 },
+  { id: "1m",  label: "1M",      months: 1 },
+  { id: "1q",  label: "1Q",      months: 3 },
+  { id: "ytd", label: "YTD" },
+  { id: "all", label: "All" }
 ];
+
+/* Embeds created before the preset set changed may still carry ?range=7d and
+   friends. Map those to the nearest current preset so an existing Notion link
+   keeps working instead of silently reverting to the default. */
+var RANGE_ALIAS = { "7d": "14d", "30d": "1m", "mtd": "1m", "90d": "1q" };
+
+function presetById(id) {
+  for (var i = 0; i < PRESETS.length; i++) { if (PRESETS[i].id === id) return PRESETS[i]; }
+  return null;
+}
 
 /* ====================================================================== utils */
 function $(id) { return document.getElementById(id); }
@@ -388,13 +398,30 @@ function textWidth(str, size, weight) {
 /* ====================================================================== slicing */
 /* Date filtering is a lexicographic compare on YYYY-MM-DD, so gaps in the
    calendar (weekends with no rows) can never shift a window. */
-function windowFor(preset, days) {
+/* Subtract whole months, clamping the day so 31 Mar minus one month is 28/29 Feb
+   rather than JS's default roll-forward into March. */
+function minusMonths(d, n) {
+  var day = d.getDate();
+  var t = new Date(d.getFullYear(), d.getMonth() - n, 1);
+  var last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  t.setDate(day < last ? day : last);
+  return t;
+}
+
+function windowFor(p) {
   var max = D.dateMax;
-  if (preset === "all") return [D.dateMin, max];
-  if (preset === "mtd") { var d = parseISO(max); return [toISO(new Date(d.getFullYear(), d.getMonth(), 1)), max]; }
-  var end = parseISO(max);
-  var start = new Date(end.getTime());
-  start.setDate(start.getDate() - (days - 1));
+  if (!p || p.id === "all") return [D.dateMin, max];
+  var end = parseISO(max), start;
+  if (p.id === "ytd") {
+    start = new Date(end.getFullYear(), 0, 1);
+  } else if (p.months) {
+    /* +1 day so "1M" ending 7 Oct starts 8 Sep - an inclusive month, not 32 days. */
+    start = minusMonths(end, p.months);
+    start.setDate(start.getDate() + 1);
+  } else {
+    start = new Date(end.getTime());
+    start.setDate(start.getDate() - (p.days - 1));
+  }
   var iso = toISO(start);
   return [iso < D.dateMin ? D.dateMin : iso, max];
 }
@@ -405,7 +432,11 @@ function priorWindow(from, to) {
   var span = Math.round((b - a) / 86400000) + 1;
   var pb = new Date(a.getTime()); pb.setDate(pb.getDate() - 1);
   var pa = new Date(pb.getTime()); pa.setDate(pa.getDate() - (span - 1));
-  if (toISO(pb) < D.dateMin) return null;
+  /* The prior window must fit ENTIRELY inside the export. Testing only its end
+     date let a half-empty window through - YTD against a prior period that
+     predates the first row reported +401% "growth" that was really just
+     missing history. No delta is better than a fabricated one. */
+  if (toISO(pa) < D.dateMin) return null;
   return [toISO(pa), toISO(pb)];
 }
 
@@ -654,7 +685,10 @@ function renderKPIs(m, prev, rows, priorRange) {
     ? "▲▼ compares against the preceding period of equal length (" + longDate(priorRange[0]) + " – " + longDate(priorRange[1]) + ")."
     : "No earlier period of equal length exists in the export, so deltas are not shown.";
   var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
-  var noun = (S.type === "__all") ? "auths" : (S.type === "Appointment" ? "schedule auths" : S.type.toLowerCase() + " auths");
+  /* Type values arrive from the build already title-cased, so they can be used
+     in a label verbatim. */
+  var noun = (S.type === "__all") ? "Authorizations"
+    : (S.type === "Appointment" ? "Schedule Authorizations" : S.type + " Authorizations");
 
   /* Delta text stays short enough to sit on one line beside the sparkline; the
      comparison window is stated once below the KPI row. */
@@ -689,14 +723,14 @@ function renderKPIs(m, prev, rows, priorRange) {
     spark: sparkline(rows, function (r) { return r.touched; }, c1)
   }));
   host.appendChild(tile({
-    label: "Percent touched by RPA",
+    label: "Percent Touched by RPA",
     value: pct(m.pctTouched),
     delta: dPct && dPct.text, deltaDir: dPct ? dPct.dir : 0,
     denom: fmt(m.touched) + " of " + fmt(m.total),
     spark: sparkline(rows, function (r) { return r.pctTouched; }, c1)
   }));
   host.appendChild(tile({
-    label: "RPA success rate",
+    label: "RPA Success Rate",
     value: pct(m.successRate),
     delta: dSucc && dSucc.text, deltaDir: dSucc ? dSucc.dir : 0,
     denom: fmt(m.success) + " of " + fmt(m.touched) + " touched",
@@ -714,11 +748,11 @@ function renderTrend(tb) {
 
   var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
   legend($("trendLegend"), [
-    { name: "Percent touched by RPA", color: c1, line: true },
-    { name: "RPA success rate", color: c2, line: true }
+    { name: "Percent Touched by RPA", color: c1, line: true },
+    { name: "RPA Success Rate", color: c2, line: true }
   ]);
   TABLES.trend = function () {
-    renderTable($("trendTable"), [tb.weekly ? "Week of" : "Date", "Total", "Touched", "% touched", "Success rate"],
+    renderTable($("trendTable"), [tb.weekly ? "Week Of" : "Date", "Total", "Touched", "% Touched", "Success Rate"],
       rows.map(function (r) { return [longDate(r.key), fmt(r.total), fmt(r.touched), pct(r.pctTouched), pct(r.successRate)]; }));
   };
   TABLES.trend();
@@ -796,10 +830,10 @@ function renderTrend(tb) {
       dots[k].setAttribute("cx", X(i)); dots[k].setAttribute("cy", Y(v)); dots[k].setAttribute("opacity", 1);
     });
     tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), [
-      { name: "touched by RPA", value: pct(r.pctTouched), color: c1 },
-      { name: "RPA success rate", value: pct(r.successRate), color: c2 },
-      { name: "total auths", value: fmt(r.total), color: null },
-      { name: "touched / failed", value: fmt(r.touched) + " / " + fmt(r.fail), color: null }
+      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: c1 },
+      { name: "RPA Success Rate", value: pct(r.successRate), color: c2 },
+      { name: "Total Authorizations", value: fmt(r.total), color: null },
+      { name: "Touched / Failed", value: fmt(r.touched) + " / " + fmt(r.fail), color: null }
     ]);
   }
   hit.addEventListener("pointermove", at);
@@ -819,14 +853,14 @@ function renderVolume(tb) {
 
   var cols = [cssVar("--series-1"), cssVar("--series-2"), cssVar("--series-3")];
   legend($("volLegend"), [
-    { name: "RPA succeeded", color: S.tex ? cols[0] : cols[0] },
-    { name: "RPA failed", color: cols[1] },
-    { name: "Handled manually", color: cols[2] }
+    { name: "RPA Succeeded", color: S.tex ? cols[0] : cols[0] },
+    { name: "RPA Failed", color: cols[1] },
+    { name: "Handled Manually", color: cols[2] }
   ]);
 
   TABLES.vol = function () {
     renderTable($("volTable"),
-      [tb.weekly ? "Week of" : "Date", "RPA succeeded", "of which retried", "RPA failed", "Manual", "Total"],
+      [tb.weekly ? "Week Of" : "Date", "RPA Succeeded", "Of Which Retried", "RPA Failed", "Manual", "Total"],
       rows.map(function (r) { return [longDate(r.key), fmt(r.ok + r.retry), fmt(r.retry), fmt(r.fail), fmt(r.human), fmt(r.total)]; }));
   };
   TABLES.vol();
@@ -897,10 +931,10 @@ function renderVolume(tb) {
     function show(ev) {
       var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + b.width / 2, clientY: b.top + 20 }; })();
       tipShow(e, (tb.weekly ? "Week of " : "") + longDate(r.key), [
-        { name: "RPA succeeded", value: fmt(r.ok + r.retry), color: cols[0] },
-        { name: "RPA failed", value: fmt(r.fail), color: cols[1] },
-        { name: "handled manually", value: fmt(r.human), color: cols[2] },
-        { name: "total", value: fmt(r.total), color: null }
+        { name: "RPA Succeeded", value: fmt(r.ok + r.retry), color: cols[0] },
+        { name: "RPA Failed", value: fmt(r.fail), color: cols[1] },
+        { name: "Handled Manually", value: fmt(r.human), color: cols[2] },
+        { name: "Total", value: fmt(r.total), color: null }
       ]);
     }
     hit.addEventListener("pointermove", show);
@@ -970,8 +1004,8 @@ function renderHBar(svg, node, tableNode, items, opts) {
     function show(ev) {
       var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + 80, clientY: b.top + 10 }; })();
       tipShow(e, it.name, [
-        { name: "count", value: fmt(it.v), color: color },
-        { name: "share of total", value: total ? pct(it.v / total, 1) : "–", color: null }
+        { name: "Count", value: fmt(it.v), color: color },
+        { name: "Share of Total", value: total ? pct(it.v / total, 1) : "–", color: null }
       ]);
     }
     hit.addEventListener("pointermove", show);
@@ -989,7 +1023,7 @@ function render() {
   /* resolve the active window */
   var from, to;
   if (S.preset === "custom") { from = S.from; to = S.to; }
-  else { var w = windowFor(S.preset, (PRESETS.filter(function (p) { return p.id === S.preset; })[0] || {}).days); from = w[0]; to = w[1]; }
+  else { var w = windowFor(presetById(S.preset)); from = w[0]; to = w[1]; }
   if (from > to) { var t = from; from = to; to = t; }
   S.from = from; S.to = to;
   $("from").value = from; $("to").value = to;
@@ -1028,13 +1062,13 @@ function render() {
     if (rest > 0) shown.push({ name: "Other (" + (reasons.length - TOPN) + " categories)", v: rest });
   }
   renderHBar($("reasonChart"), null, $("reasonTable"), shown, {
-    tableKey: "reason", catLabel: "Failure reason", labelWidth: 250,
+    tableKey: "reason", catLabel: "Failure Reason", labelWidth: 250,
     aria: "Horizontal bar chart of bot failure counts by reason"
   });
   /* full list in the table, not just the top 12 */
   TABLES.reason = function () {
     var tot = reasons.reduce(function (a, b) { return a + b.v; }, 0);
-    renderTable($("reasonTable"), ["Failure reason", "Count", "Share"],
+    renderTable($("reasonTable"), ["Failure Reason", "Count", "Share"],
       reasons.map(function (r) { return [r.name, fmt(r.v), tot ? pct(r.v / tot, 1) : "–"]; }));
   };
   TABLES.reason();
@@ -1142,7 +1176,11 @@ function boot(data) {
   var th = q.get("theme");
   if (th === "dark" || th === "light") document.documentElement.setAttribute("data-theme", th);
   var qp = q.get("range");
-  if (qp && PRESETS.some(function (p) { return p.id === qp; })) S.preset = qp;
+  if (qp) {
+    qp = qp.toLowerCase();
+    if (RANGE_ALIAS[qp]) qp = RANGE_ALIAS[qp];
+    if (presetById(qp)) S.preset = qp;
+  }
   var qt = q.get("type");
   if (qt) S.type = qt;
 

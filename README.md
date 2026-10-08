@@ -22,6 +22,23 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
+## ⚠️ Read this before you push anything
+
+The raw export is **not** safe to publish. `Bot Run Fail Reason` carries member
+identifiers and authorization numbers inside the error text, and `RC Assigned`
+carries coordinator full names and user IDs:
+
+```
+The Referral is already submitted Member ID: 40055557501
+Member Id is not found-937M98972
+There is a previous authorization on file.The authorization number is: A26237001
+Jane Doe Jane Doe <12345678.ab1c>
+```
+
+Member IDs are HIPAA identifiers. Publishing them to a public GitHub Pages site
+is effectively irreversible — crawlers and CDN caches retain content even after a
+force-push or repo deletion.
+
 ### PPI is removed at ingest
 
 The build strips identifiers **first**, before normalizing or aggregating
@@ -35,16 +52,16 @@ every blank becomes `(unassigned)`. Names and user IDs are discarded, not masked
 
 | Raw value | Becomes |
 |---|---|
-| `svc-quickbase svc-quickbase <xxxxxxxxxxxx>` | `svc-quickbase` |
-| `Jane Doe Jane Doe <xxxxxxxxxxxx>` | `(human)` |
+| `svc-quickbase svc-quickbase <67753078.i5v5>` | `svc-quickbase` |
+| `Jane Doe Jane Doe <12345678.ab1c>` | `(human)` |
 | *(empty)* | `(unassigned)` |
 
 **`Bot Run Fail Reason`** is redacted in place. Dates become `[date]`, people
 become `[name]`, and identifiers become `[id]`:
 
 ```
-Member Id is not found-xxxxxxxxx         ->  Member Id is not found-[id]
-The authorization number is: xxxxxxxx    ->  The authorization number is: [id]
+Member Id is not found-937M98972          ->  Member Id is not found-[id]
+The authorization number is: A26237001    ->  The authorization number is: [id]
 Due date 10/14/2025 expired               ->  Due date [date] expired
 ```
 
@@ -75,12 +92,12 @@ touching the original export (which is never modified). Pass
    scans all labels for digit runs, ID phrasing, and any harvested coordinator
    name. If anything suspicious survives, the build **deletes its own output and
    fails** rather than emit a publishable file. (Verified non-trivial: the gate
-   rejects 197 of the 273 raw reason strings in the current export, and 0 of the
-   published labels.)
+   rejects **774 of the 905** distinct raw reason strings in the current export,
+   and **0** of the 40 published labels.)
 
 If `Other / unclassified` starts growing, that is the signal to add a rule to
 `$REASON_RULES` in `Build-Dashboard.ps1` — the data is still safe, just less
-informative. Currently it holds 1 of 1,034 failure rows.
+informative. It currently holds **117 of 5,917** failure rows (2.0%).
 
 ---
 
@@ -88,22 +105,23 @@ informative. Currently it holds 1 of 1,034 failure rows.
 
 When a new export arrives:
 
-1. Drop it in the project root as `Orders_and_Appointments_Dashboard.xlsx`
-   (or `.csv` — both work; `.xlsx` is read through Excel).
+1. Drop it in the project root. Run bare, the build picks up the newest file
+   named `Orders_and_Appointments_Dashboard.xlsx` / `.xls` / `.csv`; any other
+   name needs `-Source`. (`.xlsx` is read through Excel, `.csv` directly.)
 2. Run the build:
 
    ```powershell
-   .\Build-Dashboard.ps1
+   .\Build-Dashboard.ps1 -Source "Orders_and_Appointments.V1.02.csv"
    ```
 
    It prints what it redacted and the headline metrics, so you can
    sanity-check both before publishing:
 
    ```
-   Sanitized: RC Assigned -> 3119 bot / 8985 human / 0 unassigned
-              (64 coordinator names discarded)
-   Sanitized: 206 fail reasons had names/identifiers redacted
-   Publish gate: no identifier-like text in 35 reason categories
+   Sanitized: RC Assigned -> 13382 bot / 91760 human / 0 unassigned
+              (67 coordinator names discarded)
+   Sanitized: 834 fail reasons had names/identifiers redacted
+   Publish gate: no identifier-like text in 40 reason categories
    ```
 
 3. Preview locally (optional):
@@ -197,17 +215,17 @@ Append these to the embed URL to control the initial view:
 | Parameter | Values | Effect |
 |---|---|---|
 | `?theme=` | `dark`, `light` | Pins the theme. Use `dark` to match a dark Notion workspace — the embed can't detect Notion's theme on its own. |
-| `?range=` | `7d`, `30d`, `90d`, `mtd`, `all` | Sets the opening date range. |
+| `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
 | `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral` | Sets the opening Type filter. |
 
 Combine with `&`:
 
 ```
-https://nicholaswilcoxakido.github.io/Prior_Auth_Dashboard/?theme=dark&range=30d
+https://nicholaswilcoxakido.github.io/Prior_Auth_Dashboard/?theme=dark&range=1q
 ```
 
 A good pattern is several embeds on one Notion page, each pinned to a different
-range — e.g. a 7-day operational view near the top and a 90-day trend below.
+range — e.g. a 14-day operational view near the top and a YTD trend below.
 
 ### Notion caveats
 
@@ -231,28 +249,34 @@ without the sanitize stage.)
 
 | Metric | Definition |
 |---|---|
-| **Total schedule auths** | Row count where `Type = Appointment`. |
+| **Total Schedule Authorizations** | Row count where `Type = Appointment`. |
 | **Touched by RPA** | **Distinct** rows where `RC Assigned` contains `svc-quickbase` **or** `Bot Run Fail Date` is populated. |
-| **Percent touched by RPA** | Touched ÷ Total. |
-| **RPA success rate** | Rows where `RC Assigned` contains `svc-quickbase` ÷ Touched. |
+| **Percent Touched by RPA** | Touched ÷ Total. |
+| **RPA Success Rate** | Rows where `RC Assigned` contains `svc-quickbase` ÷ Touched. |
 
-### Two decisions worth knowing about
+### Three decisions worth knowing about
 
-**Overlapping rows are counted once.** 107 Appointment rows have *both* an
+**Overlapping rows are counted once.** 463 Appointment rows have *both* an
 `svc-quickbase` assignment and a `Bot Run Fail Date`. Summing the two counts
 would double-count them, so "touched" uses the de-duplicated union. These rows
 are treated as **bot failed, then succeeded on retry** — they count as touched
-*and* as successes. Across the full export:
+*and* as successes. Across the full V1.02 export:
 
 ```
-3,001  bot succeeded
-  107  bot succeeded after a retry
-  884  bot failed
------
-3,992  touched by RPA   (not 4,099 — that figure double-counts the 107)
+12,789  bot succeeded
+   463  bot succeeded after a retry
+ 5,016  bot failed
+------
+18,268  touched by RPA   (not 18,731 — that figure double-counts the 463)
 ```
 
-This makes coverage 57.2% rather than 58.7%, and success rate 77.9%.
+This makes all-time coverage 30.4% rather than 31.2%, and success rate 72.5%.
+
+**A delta is only shown when the comparison period is fully present.** The
+▲▼ figures compare against the preceding window of equal length. If that window
+starts before the first row in the export, no delta is shown at all — an earlier
+version compared YTD against a partly-empty 2025 window and reported "+401%
+growth" that was really just missing history.
 
 **Date presets anchor to the latest date in the export, not to today.** A
 "last 7 days" window measured from today would come up nearly empty whenever the
@@ -263,8 +287,11 @@ populated. The exact window is always printed at the right of the filter row.
 
 ## Reading the dashboard
 
-- **Filters** sit in one row and scope everything below them. Default is the
-  previous 7 days with `Type = Appointment`.
+- **Filters** sit in one row and scope everything below them. Presets are
+  **14 Days · 1M · 1Q · YTD · All**; the default is 14 days with
+  `Type = Appointment`. `1M` and `1Q` are inclusive calendar months (a `1M`
+  window ending Oct 7 starts Sep 8), and `YTD` runs from Jan 1 of the latest
+  year in the export.
 - **Every chart has a `Table` toggle** — the accessible, copy-pasteable twin.
   The failure-reason table lists *all* categories, not just the charted top 12.
 - **The two bottom charts deliberately ignore their own filter** so the full
