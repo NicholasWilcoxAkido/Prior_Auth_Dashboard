@@ -22,22 +22,7 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
-## ⚠️ Read this before you push anything
 
-The raw export is **not** safe to publish. `Bot Run Fail Reason` carries member
-identifiers and authorization numbers inside the error text, and `RC Assigned`
-carries coordinator full names and user IDs:
-
-```
-The Referral is already submitted Member ID: 40055557501
-Member Id is not found-937M98972
-There is a previous authorization on file.The authorization number is: A26237001
-Jane Doe Jane Doe <12345678.ab1c>
-```
-
-Member IDs are HIPAA identifiers. Publishing them to a public GitHub Pages site
-is effectively irreversible — crawlers and CDN caches retain content even after a
-force-push or repo deletion.
 
 ### PPI is removed at ingest
 
@@ -52,16 +37,16 @@ every blank becomes `(unassigned)`. Names and user IDs are discarded, not masked
 
 | Raw value | Becomes |
 |---|---|
-| `svc-quickbase svc-quickbase <67753078.i5v5>` | `svc-quickbase` |
-| `Jane Doe Jane Doe <12345678.ab1c>` | `(human)` |
+| `svc-quickbase svc-quickbase xxxxxxxxx` | `svc-quickbase` |
+| `Jane Doe Jane Doe xxxxxxxxxxxxxxx` | `(human)` |
 | *(empty)* | `(unassigned)` |
 
 **`Bot Run Fail Reason`** is redacted in place. Dates become `[date]`, people
 become `[name]`, and identifiers become `[id]`:
 
 ```
-Member Id is not found-937M98972          ->  Member Id is not found-[id]
-The authorization number is: A26237001    ->  The authorization number is: [id]
+Member Id is not found-xxxxxxxxx         ->  Member Id is not found-[id]
+The authorization number is: xxxxxxxx    ->  The authorization number is: [id]
 Due date 10/14/2025 expired               ->  Due date [date] expired
 ```
 
