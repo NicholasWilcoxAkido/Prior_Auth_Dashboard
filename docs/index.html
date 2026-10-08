@@ -319,7 +319,7 @@ td:first-child { color: var(--ink); }
 
 /* ====================================================================== state */
 var D = null;
-var S = { preset: "1q", from: null, to: null, type: "Appointment", status: "__all", tex: false };
+var S = { preset: "ytd", from: null, to: null, type: "Appointment", status: "__all", tex: false };
 var TABLES = {};
 
 var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
@@ -494,8 +494,51 @@ function timeBuckets(from, to, fs) {
     map[key][f[3]] += f[5];
   }
   var keys = Object.keys(map).sort();
+
+  /* The buckets at both ends are usually part-periods, and plotted raw they read
+     as demand collapsing rather than as the edge of the data. At the tail the
+     export is a snapshot, so the day it was pulled is a part-day and the week
+     containing it is a part-week. At the head a weekly bucket starts on a Monday
+     that can predate the window - 'All' opens on Mon Dec 29 because that is the
+     ISO week holding Jan 1, and only four of its days have data. Work both out
+     here, once, so the two time charts shade identical slices and cannot
+     disagree about them.
+
+     Data exists only between the filter's edges and the export's own edges,
+     whichever bite harder. */
+  var effStart = (from > D.dateMin) ? from : D.dateMin;
+  var effEnd   = (to   < D.dateMax) ? to   : D.dateMax;
+  var full = weekly ? 7 : 1;
+
+  /* How many of a bucket's nominal days actually hold data. Short means the bar
+     is low for a calendar reason, not a business one. */
+  function coverage(key) {
+    var e = parseISO(key);
+    e.setDate(e.getDate() + full - 1);
+    var lo = key > effStart ? key : effStart;
+    var hi = toISO(e) < effEnd ? toISO(e) : effEnd;
+    var days = Math.round((parseISO(hi) - parseISO(lo)) / 86400000) + 1;
+    return { key: key, from: lo, to: hi, days: Math.max(0, Math.min(days, full)), of: full };
+  }
+
+  var partial = { head: null, tail: null };
+  if (keys.length) {
+    var h = coverage(keys[0]);
+    var t = coverage(keys[keys.length - 1]);
+    if (h.days < full) { partial.head = h; }
+    /* A tail bucket holding the pull date is short even when its day count looks
+       full, because the pull landed partway through that day. Testing that it
+       really spans dateMax matters: with a Type filter on, the newest bucket
+       holding any rows can be days older than the export, and that one is
+       genuinely complete. */
+    if (t.days < full || t.to === D.dateMax) { partial.tail = t; }
+    /* One bucket on screen is both head and tail - shade and explain it once. */
+    if (keys.length === 1 && partial.tail) { partial.head = null; }
+  }
+
   return {
     weekly: weekly,
+    partial: partial,
     rows: keys.map(function (k) {
       var b = map[k];
       var total = b[0] + b[1] + b[2] + b[3];
@@ -567,6 +610,88 @@ function texDefs(svg, colors) {
   svg.appendChild(defs);
 }
 function paint(i, colors) { return S.tex ? "url(#tex" + i + ")" : colors[i]; }
+
+/* ================================================= partial-period shading
+   A hatch, not a tint. A tint has to be light enough not to swamp the data,
+   which on the dark theme leaves it invisible; a hatch reads as "no claim is
+   being made about this area" at any lightness, and survives printing and
+   forced-colors. 'muted' is the one ink that sits mid-gray against both the
+   light and the dark surface, so the same fill works in both themes with no
+   second definition to keep in sync. */
+/* The id is namespaced per chart on purpose. Both time charts shade a partial
+   tail, and a `url(#id)` resolves against the whole document, not the owning
+   svg - so a shared id means both charts point at whichever def happens to come
+   first in the DOM, and clearing that one chart silently blanks the other's
+   hatch. Returns the id to reference. */
+function hatchDefs(svg) {
+  var id = "hatch-" + (svg.id || "chart");
+  /* Both ends of a chart can be partial, so this is called twice per svg. */
+  if (svg.querySelector("#" + id)) { return id; }
+  var defs = sv("defs");
+  var p = sv("pattern", {
+    id: id, width: 6, height: 6,
+    patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)"
+  });
+  p.appendChild(sv("path", { d: "M0,0 L0,6", stroke: cssVar("--muted"), "stroke-width": 1.2, opacity: 0.5 }));
+  defs.appendChild(p);
+  svg.appendChild(defs);
+  return id;
+}
+
+/* Shades x .. x+w over the full plot height. Deliberately no in-plot caption:
+   the band is only half a bucket wide on the line chart and a full one on the
+   columns, so a word that fits one would be suppressed in the other and the two
+   adjacent charts would mark the same slice differently. The subtitle says it in
+   words instead, and says it the same way for both. */
+function shadePartial(svg, x, w, m, ph) {
+  if (!(w > 0)) return;
+  var hid = hatchDefs(svg);
+  svg.appendChild(sv("rect", { x: x.toFixed(1), y: m.t, width: w.toFixed(1), height: ph, fill: "url(#" + hid + ")" }));
+  svg.appendChild(sv("line", {
+    x1: x.toFixed(1), x2: x.toFixed(1), y1: m.t, y2: m.t + ph,
+    stroke: cssVar("--baseline"), "stroke-width": 1, "stroke-dasharray": "3 3"
+  }));
+}
+
+/* One sentence, shared by both time charts, so the two can never describe the
+   same shaded slices differently. */
+function partialNote(p, weekly) {
+  if (!p || (!p.head && !p.tail)) return "";
+  var span = function (b) { return shortDate(b.from) + "–" + shortDate(b.to); };
+  if (p.head && p.tail) {
+    return " The first and last " + (weekly ? "weeks are" : "days are") + " shaded as incomplete — they hold only "
+      + span(p.head) + " (" + p.head.days + " of " + p.head.of + " days) and "
+      + span(p.tail) + " (" + p.tail.days + " of " + p.tail.of + "), so their dips are the edges of the window, not falls in volume.";
+  }
+  if (p.tail && !weekly) {
+    return " The last day is shaded as incomplete — the export was pulled partway through "
+      + shortDate(p.tail.to) + ", so its dip is the edge of the export, not a fall in volume.";
+  }
+  var b = p.tail || p.head;
+  return " The " + (p.tail ? "last" : "first") + " week is shaded as incomplete — it holds only "
+    + span(b) + ", " + b.days + " of " + b.of
+    + " days, so its dip is the edge of the window, not a fall in volume.";
+}
+
+/* The table view is the chart's accessible twin, so it carries the caveat too -
+   a screen-reader user should not have to infer it from a hatch pattern. */
+function bucketLabel(tb, rows, i) {
+  var p = tb.partial;
+  var inc = (p.head && i === 0) || (p.tail && i === rows.length - 1);
+  return longDate(rows[i].key) + (inc ? " (incomplete)" : "");
+}
+
+/* Tooltip row naming the shortfall, for whichever end the pointer is on. */
+function partialTipRow(tb, rows, i) {
+  var p = tb.partial;
+  var b = (p.tail && i === rows.length - 1) ? p.tail : ((p.head && i === 0) ? p.head : null);
+  if (!b) return null;
+  return {
+    name: "Period",
+    value: tb.weekly ? ("Incomplete — " + b.days + " of 7 days") : "Incomplete — part-day",
+    color: null
+  };
+}
 
 /* ====================================================================== legend */
 function legend(node, items) {
@@ -750,7 +875,8 @@ function renderTrend(tb) {
   var rows = tb.rows;
   $("trendSub").textContent = (tb.weekly ? "Weekly" : "Daily")
     + " counts on one shared axis. Touched is a subset of total, so the gap between the lines is the volume handled manually."
-    + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "");
+    + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "")
+    + partialNote(tb.partial, tb.weekly);
 
   /* Total is the envelope rather than a category, so it wears neutral ink - that
      also keeps the series hues meaning what they mean in the chart above. */
@@ -764,8 +890,8 @@ function renderTrend(tb) {
   TABLES.trend = function () {
     renderTable($("trendTable"),
       [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Touched by RPA", "Handled Manually", "% Touched", "Success Rate"],
-      rows.map(function (r) {
-        return [longDate(r.key), fmt(r.total), fmt(r.touched), fmt(r.total - r.touched), pct(r.pctTouched), pct(r.successRate)];
+      rows.map(function (r, i) {
+        return [bucketLabel(tb, rows, i), fmt(r.total), fmt(r.touched), fmt(r.total - r.touched), pct(r.pctTouched), pct(r.successRate)];
       }));
   };
   TABLES.trend();
@@ -794,6 +920,15 @@ function renderTrend(tb) {
   }
   svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
 
+  /* Shade the incomplete ends. Points sit ON their bucket's x position and the
+     outermost two land exactly on the plot edges, so the slice belonging to each
+     is the half-step inward - from the plot edge to the visual midpoint with its
+     neighbour. Drawn here, behind the fill and the lines, so it reads as
+     background rather than as another series. */
+  var step = pw / (rows.length - 1);
+  if (tb.partial.head) { shadePartial(svg, m.l, step / 2, m, ph); }
+  if (tb.partial.tail) { shadePartial(svg, m.l + pw - step / 2, step / 2, m, ph); }
+
   /* x labels, thinned to avoid collisions */
   var every = Math.max(1, Math.ceil(rows.length / 11));
   rows.forEach(function (r, i) {
@@ -801,23 +936,49 @@ function renderTrend(tb) {
     svg.appendChild(sv("text", { x: X(i), y: H - 12, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 11 }, r.label));
   });
 
-  function linePath(key) {
+  function linePath(key, a, b) {
     var d = "";
-    rows.forEach(function (r, i) { d += (i ? " L" : " M") + X(i).toFixed(1) + "," + Y(r[key]).toFixed(1); });
+    for (var i = a; i <= b; i++) { d += (i === a ? "M" : " L") + X(i).toFixed(1) + "," + Y(rows[i][key]).toFixed(1); }
     return d;
   }
-  var dTot = linePath("total"), dTch = linePath("touched");
+  var lastI = rows.length - 1;
+  var dTot = linePath("total", 0, lastI), dTch = linePath("touched", 0, lastI);
 
   /* Touched is filled to the baseline so the band reads as "RPA's share of the
      work". Total gets no fill - a second fill would overlap this one and turn
      the part-of-whole relationship into mud. */
   svg.appendChild(sv("path", {
-    d: dTch + " L" + X(rows.length - 1).toFixed(1) + "," + Y(0).toFixed(1)
+    d: dTch + " L" + X(lastI).toFixed(1) + "," + Y(0).toFixed(1)
        + " L" + X(0).toFixed(1) + "," + Y(0).toFixed(1) + " Z",
     fill: S.tex ? "url(#tex0)" : cTch, opacity: S.tex ? 0.5 : 0.18, stroke: "none"
   }));
-  svg.appendChild(sv("path", { d: dTot.trim(), fill: "none", stroke: cTot, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
-  svg.appendChild(sv("path", { d: dTch.trim(), fill: "none", stroke: cTch, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+
+  /* Runs into and out of an incomplete bucket are dashed. The hatch already marks
+     the area, but the dash is what stops the eye reading the step as a real move -
+     a broken line is the conventional "provisional" signal and costs nothing. The
+     segment lists are built so solid and dashed together always cover the whole
+     line with no gap, down to a two-bucket chart where both ends are partial and
+     the single segment is simply all dashed. */
+  var hd = !!tb.partial.head, tl = !!tb.partial.tail;
+  var solidA = hd ? 1 : 0, solidB = tl ? lastI - 1 : lastI;
+  var dashed = [];
+  if (hd) { dashed.push([0, 1]); }
+  if (tl && !(hd && lastI === 1)) { dashed.push([lastI - 1, lastI]); }
+
+  [["total", cTot], ["touched", cTch]].forEach(function (s) {
+    if (solidB > solidA) {
+      svg.appendChild(sv("path", {
+        d: linePath(s[0], solidA, solidB), fill: "none", stroke: s[1],
+        "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round"
+      }));
+    }
+    dashed.forEach(function (g) {
+      svg.appendChild(sv("path", {
+        d: linePath(s[0], g[0], g[1]), fill: "none", stroke: s[1],
+        "stroke-width": 2, "stroke-linecap": "round", "stroke-dasharray": "5 4"
+      }));
+    });
+  });
 
   /* End markers + direct labels. Touched sits at or below total, so when coverage
      is high the two labels can land on the same pixels - nudge the lower one down
@@ -825,8 +986,15 @@ function renderTrend(tb) {
   var last = rows[rows.length - 1], lx = X(rows.length - 1);
   var yTot = Y(last.total), yTch = Y(last.touched);
   var labTch = (yTch - yTot < 13) ? yTot + 13 : yTch;
+  /* Hollow markers when the bucket they sit on is incomplete - same logic as the
+     dash. The value beside them is still the true count for the days so far, so
+     it stays; it is the finality that is wrong to imply, not the number. */
   [[yTot, cTot, fmt(last.total), yTot], [yTch, cTch, fmt(last.touched), labTch]].forEach(function (e) {
-    svg.appendChild(sv("circle", { cx: lx, cy: e[0], r: 4.5, fill: e[1], stroke: cssVar("--surface-1"), "stroke-width": 2 }));
+    svg.appendChild(sv("circle", {
+      cx: lx, cy: e[0], r: 4.5,
+      fill: tl ? cssVar("--surface-1") : e[1],
+      stroke: tl ? e[1] : cssVar("--surface-1"), "stroke-width": 2
+    }));
     svg.appendChild(sv("text", { x: lx + 10, y: e[3] + 4, fill: cssVar("--ink"), "font-size": 11.5, "font-weight": 600 }, e[2]));
   });
 
@@ -848,13 +1016,18 @@ function renderTrend(tb) {
     cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity", 1);
     dotT.setAttribute("cx", X(i)); dotT.setAttribute("cy", Y(r.total)); dotT.setAttribute("opacity", 1);
     dotC.setAttribute("cx", X(i)); dotC.setAttribute("cy", Y(r.touched)); dotC.setAttribute("opacity", 1);
-    tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), [
+    var tr = [
       { name: "Total Authorization Volume", value: fmt(r.total), color: cTot },
       { name: "Total Touched by RPA", value: fmt(r.touched), color: cTch },
       { name: "Handled Manually", value: fmt(r.total - r.touched), color: null },
       { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: null },
       { name: "RPA Success Rate", value: pct(r.successRate), color: null }
-    ]);
+    ];
+    /* Hovering is how people read the exact number, so the caveat has to be here
+       too - not only in the subtitle they may have scrolled past. */
+    var pr = partialTipRow(tb, rows, i);
+    if (pr) { tr.push(pr); }
+    tipShow(ev, (tb.weekly ? "Week of " : "") + longDate(r.key), tr);
   }
   hit.addEventListener("pointermove", at);
   hit.addEventListener("pointerleave", function () {
@@ -869,7 +1042,8 @@ function renderVolume(tb) {
   var svg = $("volChart");
   var rows = tb.rows;
   $("volSub").textContent = (tb.weekly ? "Weekly" : "Daily") + " counts, stacked to the period total."
-    + " Bot successes include runs that failed once and succeeded on retry.";
+    + " Bot successes include runs that failed once and succeeded on retry."
+    + partialNote(tb.partial, tb.weekly);
 
   var cols = [cssVar("--series-1"), cssVar("--series-2"), cssVar("--series-3")];
   legend($("volLegend"), [
@@ -881,7 +1055,7 @@ function renderVolume(tb) {
   TABLES.vol = function () {
     renderTable($("volTable"),
       [tb.weekly ? "Week Of" : "Date", "RPA Succeeded", "Of Which Retried", "RPA Failed", "Manual", "Total"],
-      rows.map(function (r) { return [longDate(r.key), fmt(r.ok + r.retry), fmt(r.retry), fmt(r.fail), fmt(r.human), fmt(r.total)]; }));
+      rows.map(function (r, i) { return [bucketLabel(tb, rows, i), fmt(r.ok + r.retry), fmt(r.retry), fmt(r.fail), fmt(r.human), fmt(r.total)]; }));
   };
   TABLES.vol();
 
@@ -907,6 +1081,11 @@ function renderVolume(tb) {
     svg.appendChild(sv("text", { x: m.l - 8, y: Y(tv) + 4, "text-anchor": "end", fill: cssVar("--muted"), "font-size": 11, style: "font-variant-numeric:tabular-nums" }, fmt(Math.round(tv))));
   }
   svg.appendChild(sv("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: cssVar("--baseline"), "stroke-width": 1 }));
+
+  /* Columns own a whole band, so unlike the line chart the shaded slice is exactly
+     the end column's band - no halving needed. */
+  if (tb.partial.head) { shadePartial(svg, m.l, band, m, ph); }
+  if (tb.partial.tail) { shadePartial(svg, m.l + band * (rows.length - 1), band, m, ph); }
 
   var every = Math.max(1, Math.ceil(rows.length / 11));
   rows.forEach(function (r, i) {
@@ -947,15 +1126,18 @@ function renderVolume(tb) {
     var hit = sv("rect", { x: (cx - band / 2).toFixed(1), y: m.t, width: Math.max(band, 1).toFixed(1), height: ph, fill: "transparent" });
     hit.setAttribute("tabindex", "0");
     hit.setAttribute("role", "img");
-    hit.setAttribute("aria-label", longDate(r.key) + ": " + (r.ok + r.retry) + " RPA succeeded, " + r.fail + " RPA failed, " + r.human + " manual");
+    hit.setAttribute("aria-label", bucketLabel(tb, rows, i) + ": " + (r.ok + r.retry) + " RPA succeeded, " + r.fail + " RPA failed, " + r.human + " manual");
     function show(ev) {
       var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + b.width / 2, clientY: b.top + 20 }; })();
-      tipShow(e, (tb.weekly ? "Week of " : "") + longDate(r.key), [
+      var tr = [
         { name: "RPA Succeeded", value: fmt(r.ok + r.retry), color: cols[0] },
         { name: "RPA Failed", value: fmt(r.fail), color: cols[1] },
         { name: "Handled Manually", value: fmt(r.human), color: cols[2] },
         { name: "Total", value: fmt(r.total), color: null }
-      ]);
+      ];
+      var pr = partialTipRow(tb, rows, i);
+      if (pr) { tr.push(pr); }
+      tipShow(e, (tb.weekly ? "Week of " : "") + longDate(r.key), tr);
     }
     hit.addEventListener("pointermove", show);
     hit.addEventListener("focus", show);

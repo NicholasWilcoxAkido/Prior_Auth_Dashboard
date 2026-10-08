@@ -206,7 +206,7 @@ Append these to the embed URL to control the initial view:
 | Parameter | Values | Effect |
 |---|---|---|
 | `?theme=` | `dark`, `light` | Pins the theme. Use `dark` to match a dark Notion workspace — the embed can't detect Notion's theme on its own. |
-| `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
+| `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `ytd`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
 | `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral` | Sets the opening Type filter. |
 
 Combine with `&`:
@@ -216,7 +216,9 @@ https://nicholaswilcoxakido.github.io/Prior_Auth_Dashboard/?theme=dark&range=1q
 ```
 
 A good pattern is several embeds on one Notion page, each pinned to a different
-range — e.g. a 14-day operational view near the top and a YTD trend below.
+range — e.g. a 14-day operational view near the top and the default YTD trend
+below. The 14-day view is also the one that shows ▲▼ deltas, which the YTD
+default can't yet (see *Three decisions worth knowing about*).
 
 ### Notion caveats
 
@@ -326,6 +328,13 @@ starts before the first row in the export, no delta is shown at all — an earli
 version compared YTD against a partly-empty 2025 window and reported "+401%
 growth" that was really just missing history.
 
+> Because the default preset is now **YTD** and the export starts Jan 1, 2026,
+> the opening view has **no ▲▼ deltas** — there is no 2025 to compare against, and
+> the tiles say so in place of a number. This is the safeguard working, not a
+> bug. Deltas appear as soon as you pick a shorter preset, and the default will
+> start showing them once the export holds more than a year of completions.
+> If you want deltas visible on first load, embed with `?range=1q`.
+
 **Date presets anchor to the latest date in the export, not to today.** A
 "last 7 days" window measured from today would come up nearly empty whenever the
 export is a few days stale. Anchoring to the data keeps the default view
@@ -336,13 +345,14 @@ populated. The exact window is always printed at the right of the filter row.
 ## Reading the dashboard
 
 - **Filters** sit in one row and scope everything below them. Presets are
-  **14 Days · 1M · 1Q · YTD · All**; the default is **1Q** with
+  **14 Days · 1M · 1Q · YTD · All**; the default is **YTD** with
   `Type = Appointment`. `1M` and `1Q` are inclusive calendar months (a `1M`
   window ending Oct 8 starts Sep 9), and `YTD` runs from Jan 1 of the latest
-  year in the export. A quarter is wide enough that the charts bucket by week,
-  which is why the opening view is weekly rather than daily. **`YTD` and `All`
-  currently show the same window**, because the earliest completion date in the
-  export is Jan 1, 2026.
+  year in the export. Anything past 70 days buckets by week, so the opening view
+  is weekly rather than daily. **`YTD` and `All` currently show the same
+  window**, because the earliest completion date in the export is Jan 1, 2026 —
+  so today the default view is also the whole history. That will diverge in
+  January, when `YTD` resets and `All` keeps 2026.
 - **Every number is a count of authorizations *completed* in the window**, not
   requested in it. See *The date basis* above — this is the single most
   misreadable thing about the dashboard.
@@ -357,6 +367,21 @@ populated. The exact window is always printed at the right of the filter row.
   moved anywhere just by rescaling. Percent touched and success rate are still
   in that chart's tooltip and its `Table` view, which also breaks out a
   Handled Manually column.
+- **Hatched = incomplete period; don't read the dip.** Both time charts shade
+  any end bucket that holds fewer days than it spans, and the lines run dashed
+  through it with a hollow end marker. The subtitle spells out the shortfall
+  (e.g. *"Oct 5–Oct 8, 4 of 7 days"*), the tooltip repeats it, and the `Table`
+  view appends **(incomplete)** to that row. Two separate causes:
+  - **The tail** — the export is a snapshot, so the day it was pulled is a
+    part-day and the week containing it is a part-week.
+  - **The head**, weekly views only — buckets are ISO weeks starting Monday, so
+    `All` opens on Mon Dec 29 because that's the week holding Jan 1, and only
+    four of its days have data.
+
+  The counts shown are still the true counts for the days present; it's the
+  *finality* that would be wrong to imply. A bucket that is low because the work
+  was genuinely low is **not** shaded — only a calendar shortfall triggers it, so
+  the shading stays meaningful.
 - **The two bottom charts deliberately ignore their own filter** so the full
   Type / Status mix stays visible while you filter the rest of the dashboard.
 - **`Patterns`** adds directional fills so series stay distinguishable without
