@@ -22,6 +22,7 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
+
 ### PPI is removed at ingest
 
 The build strips identifiers **first**, before normalizing or aggregating
@@ -207,7 +208,8 @@ Append these to the embed URL to control the initial view:
 |---|---|---|
 | `?theme=` | `dark`, `light` | Pins the theme. Use `dark` to match a dark Notion workspace — the embed can't detect Notion's theme on its own. |
 | `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `ytd`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
-| `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral` | Sets the opening Type filter. |
+| `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral`, `all` — or a comma-separated list | Sets the opening Type filter. Both filters are multi-select, so `?type=Appointment,Referral` opens with two Types included. A single value still works, so existing embeds are unchanged. A value this export doesn't contain is ignored and the default (`Appointment`) stands. |
+| `?status=` | `Auth Approved`, `Auth Not Required`, `Auth Denied`, `Auth Blocked`, `all` — or a comma-separated list | Sets the opening Status filter; the default is `all`. Spaces in a status name need URL-encoding, which the browser does for you if you type the URL in the address bar. |
 
 Combine with `&`:
 
@@ -382,6 +384,15 @@ populated. The exact window is always printed at the right of the filter row.
   *finality* that would be wrong to imply. A bucket that is low because the work
   was genuinely low is **not** shaded — only a calendar shortfall triggers it, so
   the shading stays meaningful.
+- **Type and Status are multi-select.** Each one opens a panel of checkboxes —
+  tick as many or as few values as you want, and every ticked value is included
+  in every KPI and chart below. The button reports the selection (`Appointment`,
+  `Appointment, Referral`, `3 of 4 types`), and **All types** / **All statuses**
+  at the top of the panel ticks everything at once. The selection is also
+  printed in the small line under the KPI row, because the filter row is hidden
+  when the page is printed. One value always stays ticked: unticking the last
+  one is a no-op, since an empty selection would draw an empty dashboard that
+  reads as a broken build rather than as a filter choice.
 - **The two bottom charts deliberately ignore their own filter** so the full
   Type / Status mix stays visible while you filter the rest of the dashboard.
 - **`Patterns`** adds directional fills so series stay distinguishable without
