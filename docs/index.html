@@ -130,7 +130,9 @@ select, input[type="date"] {
 }
 .mspanel {
   display: none; position: absolute; z-index: 60; top: calc(100% + 4px); left: 0;
-  min-width: 100%; max-height: 270px; overflow: auto; padding: 5px;
+  /* Tall enough that the 11-portal roster fits without scrolling, still bounded
+     so a future longer list cannot run off the bottom of the viewport. */
+  min-width: 100%; max-height: 350px; overflow: auto; padding: 5px;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.16);
 }
@@ -143,6 +145,23 @@ select, input[type="date"] {
 .msopt:hover { background: var(--hover-wash); }
 .msopt input { margin: 0; flex: none; accent-color: var(--series-1); }
 .msdiv { height: 1px; background: var(--border); margin: 4px 2px; }
+
+/* "only" shortcut. A filter that opens with everything ticked would otherwise
+   need ten clicks to isolate one portal, which is the main thing anyone wants
+   to do with it. Revealed on row hover or keyboard focus - opacity rather than
+   visibility so it stays in the tab order, and the row highlight always arrives
+   before a click can land on it. */
+.msrow { display: flex; align-items: center; gap: 4px; }
+.msrow .msopt { flex: 1 1 auto; }
+.msonly {
+  font: inherit; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  cursor: pointer; flex: none; opacity: 0;
+  color: var(--ink-2); background: transparent;
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px;
+}
+.msrow:hover .msonly, .msonly:focus-visible { opacity: 1; }
+.msonly:hover { background: var(--hover-wash); color: var(--ink); }
+.msonly:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
 .vsep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
 .range-note { font-size: 12px; color: var(--muted); }
 
@@ -270,6 +289,14 @@ td:first-child { color: var(--ink); }
         <div class="mspanel" id="fstatusPanel" role="group" aria-label="Statuses to include"></div>
       </div>
     </div>
+    <!-- Hidden outright on an export with no Insurance Portal column. -->
+    <div class="fgroup" id="portalGroup" hidden>
+      <span class="flabel">Portal</span>
+      <div class="ms" id="msPortal">
+        <button class="msbtn" id="fportalBtn" type="button" aria-expanded="false" aria-controls="fportalPanel" aria-label="Filter by insurance portal"></button>
+        <div class="mspanel" id="fportalPanel" role="group" aria-label="Insurance portals to include"></div>
+      </div>
+    </div>
     <div class="spacer" style="flex:1 1 auto"></div>
     <span class="range-note" id="rangeEcho"></span>
   </div>
@@ -339,7 +366,8 @@ td:first-child { color: var(--ink); }
     <h3>How These Numbers Are Defined</h3>
     <ul>
       <li><strong>Every date is the date the authorization was completed</strong> (<code>Date Auth Completed Roll Up</code>), not the date it was requested. So this dashboard measures <strong>throughput</strong> &mdash; what finished in the window. A request that arrived in August and finished in September counts in September.</li>
-      <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type and Status filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type, Status and Portal filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Portal</strong> &mdash; <code>Insurance Portal</code>, the payer portal the authorization was worked in. <code>(Blank)</code> is a real answer rather than missing data: it is mostly <code>Auth Not Required</code> work that never needed a portal, and it holds almost no RPA activity.</li>
       <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
       <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
       <li><strong>Date Presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
@@ -362,7 +390,7 @@ var D = null;
    [] is the canonical "every value". Keeping all-means-empty rather than
    listing every value means a future export that adds a Type is included
    automatically instead of being silently filtered out by a stale list. */
-var S = { preset: "ytd", from: null, to: null, types: ["Appointment"], statuses: [], tex: false };
+var S = { preset: "ytd", from: null, to: null, types: ["Appointment"], statuses: [], portals: [], tex: false };
 var TABLES = {};
 
 var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
@@ -514,11 +542,19 @@ function selLabel(sel, dim, allLabel, noun) {
   return eff.length + " of " + dim.length + " " + noun;
 }
 
-/* Fact filter. ignore lets the type/status mix charts opt out of their own dimension. */
+/* Fact filter. ignore lets the type/status mix charts opt out of their own dimension.
+
+   Fact tuple: [date, type, status, bucket, reason, count, portal]. The portal
+   index sits AFTER the count because it was added later and GitHub Pages serves
+   a stale data.json for minutes after a push - see the matching comment in
+   Build-Dashboard.ps1. An export with no portal column publishes an empty
+   D.portals, which is also what an old data.json looks like here, and that one
+   condition both hides the filter and skips the test below. */
 function facts(from, to, ignore) {
   ignore = ignore || {};
   var tm = ignore.type ? null : selMask(S.types, D.types);
   var sm = ignore.status ? null : selMask(S.statuses, D.statuses);
+  var pm = (ignore.portal || !D.portals.length) ? null : selMask(S.portals, D.portals);
   var out = [];
   for (var i = 0; i < D.facts.length; i++) {
     var f = D.facts[i];
@@ -526,6 +562,7 @@ function facts(from, to, ignore) {
     if (d < from || d > to) continue;
     if (tm && !tm[f[1]]) continue;
     if (sm && !sm[f[2]]) continue;
+    if (pm && !pm[f[6]]) continue;
     out.push(f);
   }
   return out;
@@ -887,7 +924,8 @@ function renderKPIs(m, prev, rows, priorRange) {
     ? "▲▼ compares against the preceding period of equal length (" + longDate(priorRange[0]) + " – " + longDate(priorRange[1]) + ")."
     : "No earlier period of equal length exists in the export, so deltas are not shown.")
     + " Type: " + selLabel(S.types, D.types, "all", "types")
-    + " · Status: " + selLabel(S.statuses, D.statuses, "all", "statuses") + ".";
+    + " · Status: " + selLabel(S.statuses, D.statuses, "all", "statuses")
+    + (D.portals.length ? " · Portal: " + selLabel(S.portals, D.portals, "all", "portals") : "") + ".";
   var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
   /* Type values arrive from the build already title-cased, so they can be used
      in a label verbatim. With several Types selected no single noun is honest,
@@ -1395,7 +1433,25 @@ function buildMultiFilter(cfg) {
     var sp = document.createElement("span");
     sp.textContent = text;              /* CSV-derived label: never innerHTML */
     lab.appendChild(cb); lab.appendChild(sp);
-    panel.appendChild(lab);
+
+    if (value === null) { panel.appendChild(lab); return cb; }
+
+    /* The "only" button lives OUTSIDE the <label> on purpose: inside it, every
+       click would also activate the label and toggle the checkbox underneath. */
+    var row = document.createElement("div");
+    row.className = "msrow";
+    var only = document.createElement("button");
+    only.type = "button";
+    only.className = "msonly";
+    only.textContent = "only";
+    only.title = "Show only " + value;
+    only.addEventListener("click", function () {
+      S[cfg.key] = (values.length === 1) ? [] : [value];
+      sync();
+      render();
+    });
+    row.appendChild(lab); row.appendChild(only);
+    panel.appendChild(row);
     return cb;
   }
 
@@ -1470,6 +1526,17 @@ function buildControls() {
     key: "statuses", values: D.statuses, allLabel: "All statuses", noun: "statuses"
   });
 
+  /* Portal only exists from V1.07 on. With no column there is nothing to pick,
+     and an empty dropdown would read as a broken filter rather than as an
+     older export, so the whole group stays hidden. */
+  if (D.portals.length) {
+    $("portalGroup").hidden = false;
+    buildMultiFilter({
+      wrapId: "msPortal", btnId: "fportalBtn", panelId: "fportalPanel",
+      key: "portals", values: D.portals, allLabel: "All portals", noun: "portals"
+    });
+  }
+
   document.addEventListener("click", closeAllMulti);
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") closeAllMulti();
@@ -1514,6 +1581,9 @@ function boot(data) {
   D.types = D.types || [];
   D.statuses = D.statuses || [];
   D.reasons = D.reasons || [];
+  /* Absent in any data.json built before V1.07 - the empty array is what makes
+     the PORTAL filter disappear instead of throwing. */
+  D.portals = D.portals || [];
 
   var gen = new Date(D.generatedUtc);
   /* "Completions through", not "Data through" - the dashboard buckets on the
@@ -1557,6 +1627,8 @@ function boot(data) {
   if (qt) S.types = qt;
   var qs = parseSel(q.get("status"), D.statuses);
   if (qs) S.statuses = qs;
+  var qpo = parseSel(q.get("portal"), D.portals);
+  if (qpo) S.portals = qpo;
 
   buildControls();
   render();

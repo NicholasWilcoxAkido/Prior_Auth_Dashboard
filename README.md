@@ -22,7 +22,6 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
-
 ### PPI is removed at ingest
 
 The build strips identifiers **first**, before normalizing or aggregating
@@ -56,9 +55,20 @@ whole-token rule, so a token like `matches` followed immediately by a digit run
 becomes `matches[id]` rather than bare `[id]`, which keeps the
 failure-category rules below matching.
 
+**The two columns V1.07 added are treated differently from each other.**
+`Insurance Portal` is published as a dashboard dimension — the values are payer
+and vendor brand names (`Aerial`, `IEHP`, `Medpoint`, …), which carry nothing
+about a member. Unlike failure reasons, that label set is **open**, because the
+payer roster isn't ours to close, so the publish gate scans portal labels for
+digit runs and coordinator names exactly as it scans the rest.
+`Encounter Provider` is **not read anywhere in the build** — provider names are
+a fresh PPI surface and no metric asks for them yet, so the cheapest way to keep
+them out of a published file is to never load the column at all.
+
 A PPI-free row-level copy is written to
 `sanitized/<name>.sanitized.csv` so you can inspect or share the data without
-touching the original export (which is never modified). Pass
+touching the original export (which is never modified). It includes
+`Insurance Portal` and excludes `Encounter Provider`, for the reason above. Pass
 `-SkipSanitizedCsv` to skip writing it. That folder is gitignored.
 
 ### Four safeguards. Do not disable them.
@@ -77,12 +87,12 @@ touching the original export (which is never modified). Pass
    scans all labels for digit runs, ID phrasing, and any harvested coordinator
    name. If anything suspicious survives, the build **deletes its own output and
    fails** rather than emit a publishable file. (Verified non-trivial: the gate
-   rejects **774 of the 905** distinct raw reason strings in the current export,
-   and **0** of the 40 published labels.)
+   rejects **766 of the 911** distinct raw reason strings in the current export,
+   and **0** of the 40 published labels or 11 published portals.)
 
 If `Other / unclassified` starts growing, that is the signal to add a rule to
 `$REASON_RULES` in `Build-Dashboard.ps1` — the data is still safe, just less
-informative. It currently holds **117 of 5,917** failure rows (2.0%).
+informative. It currently holds **119 of 6,004** failure rows (2.0%).
 
 ---
 
@@ -96,21 +106,26 @@ When a new export arrives:
 2. Run the build:
 
    ```powershell
-   .\Build-Dashboard.ps1 -Source "Orders_and_AppointmentsV1.05.csv"
+   .\Build-Dashboard.ps1 -Source "Orders_and_AppointmentsV1.07.csv"
    ```
 
    It prints what it redacted, which date column it bucketed on, and the
    headline metrics, so you can sanity-check all three before publishing:
 
    ```
-   Sanitized: RC Assigned -> 13496 bot / 91944 human / 0 unassigned
+   Insurance Portal: present
+   Sanitized: RC Assigned -> 13952 bot / 93458 human / 4 unassigned
               (67 coordinator names discarded)
-   Sanitized: 834 fail reasons had names/identifiers redacted
+   Sanitized: 840 fail reasons had names/identifiers redacted
    Date basis     : Date Auth Completed Roll Up
-   Rows aggregated: 105417  (dropped for unparsable date: 0,
-                             dated after the 2026-10-08 pull: 23)
-   Publish gate: no identifier-like text in 40 reason categories
+   Rows aggregated: 107393  (dropped for unparsable date: 0,
+                             dated after the 2026-10-13 pull: 21)
+   Publish gate: no identifier-like text in 40 reason categories / 11 portals.
    ```
+
+   **Check the `Insurance Portal` line.** `absent` means the export predates
+   V1.07 or the column was renamed; the build still succeeds and the dashboard
+   simply hides the PORTAL filter rather than failing.
 
    **Check the `Date basis` line.** If it ever says anything other than
    `Date Auth Completed Roll Up`, every chart has silently changed meaning —
@@ -210,6 +225,7 @@ Append these to the embed URL to control the initial view:
 | `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `ytd`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
 | `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral`, `all` — or a comma-separated list | Sets the opening Type filter. Both filters are multi-select, so `?type=Appointment,Referral` opens with two Types included. A single value still works, so existing embeds are unchanged. A value this export doesn't contain is ignored and the default (`Appointment`) stands. |
 | `?status=` | `Auth Approved`, `Auth Not Required`, `Auth Denied`, `Auth Blocked`, `all` — or a comma-separated list | Sets the opening Status filter; the default is `all`. Spaces in a status name need URL-encoding, which the browser does for you if you type the URL in the address bar. |
+| `?portal=` | Any portal in the export (`Aerial`, `IEHP`, `Medpoint`, …), `(Blank)`, `all` — or a comma-separated list | Sets the opening Portal filter; the default is `all`. Ignored on an export with no `Insurance Portal` column, where the filter doesn't exist. |
 
 Combine with `&`:
 
@@ -260,24 +276,24 @@ chart, so don't do it quietly.
 ### Three things this basis costs you
 
 1. **History starts 2026-01-01, hard.** Not one row in the export has a
-   completion date in 2025, even though 10,657 rows were *created* between July
+   completion date in 2025, even though 10,661 rows were *created* between July
    and December 2025 — those all carry 2026 completion dates, decaying from 4,588
    in January to a few dozen by autumn. Whether that is a real cleared backlog or
    an artifact of when the field started being populated is a **Quickbase
    question, not a dashboard one**. Either way the x-axis cannot go back further,
    so `YTD` and `All` currently show the same window.
 2. **The open backlog is invisible.** `Date Auth Completed Roll Up` is **100%
-   populated** — zero blanks in 105,440 rows. A genuine completion field would be
+   populated** — zero blanks in 107,414 rows. A genuine completion field would be
    blank for anything still in flight, so in-progress authorizations either aren't
    in this export or aren't distinguishable in it. Nothing here can tell you how
    much work is currently open.
-3. **About 6% of rows complete before they're created.** 6,536 rows have a
+3. **About 6% of rows complete before they're created.** 6,587 rows have a
    completion date earlier than their creation date, which is impossible for a
    true timestamp pair. It doesn't affect any current metric — nothing computes a
    duration — but it does mean **turnaround time cannot be built on these two
    columns** until it's explained.
 
-A fourth issue was found and handled: **23 rows carry completion dates after the
+A fourth issue was found and handled: **21 rows carry completion dates after the
 day the export was pulled**, the furthest 2027-03-30. Date presets anchor to the
 latest date in the file, so that single 2027 row would have dragged the "14 Days"
 window five months into empty calendar and opened the dashboard blank. The build
@@ -287,7 +303,7 @@ now drops anything dated past the export's own pull date and prints the count.
 
 ## Metric definitions
 
-Scoped to the current Type, Status, and date filters. "In the period" means
+Scoped to the current Type, Status, Portal, and date filters. "In the period" means
 **completed** in the period. Type is matched
 case-insensitively, because the export mixes `Appointment` with `DIAGNOSTIC`
 and `REFERRAL`. `RC Assigned` is tested with *contains* `svc-quickbase` against
@@ -304,23 +320,23 @@ without the sanitize stage.)
 
 ### Three decisions worth knowing about
 
-**Overlapping rows are counted once.** 462 Appointment rows have *both* an
+**Overlapping rows are counted once.** 469 Appointment rows have *both* an
 `svc-quickbase` assignment and a `Bot Run Fail Date`. Summing the two counts
 would double-count them, so "touched" uses the de-duplicated union. These rows
 are treated as **bot failed, then succeeded on retry** — they count as touched
-*and* as successes. Across the full V1.05 export:
+*and* as successes. Across the full V1.07 export:
 
 ```
-12,894  bot succeeded
-   462  bot succeeded after a retry
- 5,009  bot failed
+13,341  bot succeeded
+   469  bot succeeded after a retry
+ 5,093  bot failed
 ------
-18,365  touched by RPA   (not 18,827 — that figure double-counts the 462)
+18,903  touched by RPA   (not 19,372 — that figure double-counts the 469)
 ```
 
-This makes all-time coverage 30.5% rather than 31.2%, and success rate 72.7%.
+This makes all-time coverage 30.8% rather than 31.6%, and success rate 73.1%.
 Note that all-time coverage is essentially **unchanged** by the switch to the
-completion basis (30.41% → 30.45%), which is the expected result: re-dating rows
+completion basis (30.81% → 30.81%), which is the expected result: re-dating rows
 moves them between periods but doesn't add or remove any. The basis changes
 *period* figures, not the grand total.
 
@@ -384,15 +400,26 @@ populated. The exact window is always printed at the right of the filter row.
   *finality* that would be wrong to imply. A bucket that is low because the work
   was genuinely low is **not** shaded — only a calendar shortfall triggers it, so
   the shading stays meaningful.
-- **Type and Status are multi-select.** Each one opens a panel of checkboxes —
-  tick as many or as few values as you want, and every ticked value is included
-  in every KPI and chart below. The button reports the selection (`Appointment`,
-  `Appointment, Referral`, `3 of 4 types`), and **All types** / **All statuses**
-  at the top of the panel ticks everything at once. The selection is also
-  printed in the small line under the KPI row, because the filter row is hidden
-  when the page is printed. One value always stays ticked: unticking the last
-  one is a no-op, since an empty selection would draw an empty dashboard that
-  reads as a broken build rather than as a filter choice.
+- **Type, Status and Portal are multi-select.** Each one opens a panel of
+  checkboxes — tick as many or as few values as you want, and every ticked value
+  is included in every KPI and chart below. The button reports the selection
+  (`Appointment`, `Appointment, Referral`, `3 of 4 types`), and
+  **All types** / **All statuses** / **All portals** at the top of the panel
+  ticks everything at once. Hovering a row reveals an **only** button, which
+  isolates that one value in a single click — the fast path for "just Aerial",
+  which would otherwise mean unticking ten boxes. The selection is also printed
+  in the small line under the KPI row, because the filter row is hidden when the
+  page is printed. One value always stays ticked: unticking the last one is a
+  no-op, since an empty selection would draw an empty dashboard that reads as a
+  broken build rather than as a filter choice.
+- **`Portal`** is `Insurance Portal`, the payer portal the auth was worked in.
+  It appears only on exports from **V1.07** on; on an older one the whole
+  control is hidden rather than shown empty. `(Blank)` is a real answer, not
+  missing data — it's ~32% of rows, mostly `Auth Not Required` work that never
+  needed a portal, and it holds **2** of the ~19.5k RPA-touched rows. Expect
+  portal-level RPA coverage to look wildly different per portal: `Aerial` is
+  about a third of all volume and carries most of the bot work, while `Citrus`
+  has none at all.
 - **The two bottom charts deliberately ignore their own filter** so the full
   Type / Status mix stays visible while you filter the rest of the dashboard.
 - **`Patterns`** adds directional fills so series stay distinguishable without

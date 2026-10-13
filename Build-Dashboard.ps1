@@ -95,6 +95,13 @@ $COL_STATUS = 'Status (Referral Coordinator)'
 $COL_RC     = 'RC Assigned'
 $COL_FDATE  = 'Bot Run Fail Date'
 $COL_FREASON= 'Bot Run Fail Reason'
+# Arrived in V1.07. OPTIONAL on purpose: an export that predates it still has to
+# build, so this column is read when present and skipped when not.
+$COL_PORTAL = 'Insurance Portal'
+# V1.07 also carries 'Encounter Provider'. It is deliberately NOT read anywhere
+# in this script: provider names are a fresh PPI surface with no metric asking
+# for them yet, and the cheapest way to keep them out of a published file is to
+# never load them in the first place.
 
 # Every date on the dashboard buckets on THIS column. It is the completion date,
 # so the dashboard reports throughput (what got finished in a period), not intake
@@ -109,6 +116,11 @@ $missing = @($COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE,
 if ($missing.Count) {
     throw "Source is missing required column(s): $($missing -join ', ')`nFound: $($present -join ', ')"
 }
+
+# The dashboard hides its PORTAL filter when this comes back false, so an older
+# export degrades to the V1.05 dashboard instead of showing an empty control.
+$hasPortal = $COL_PORTAL -in $present
+Write-Host ("Insurance Portal: {0}" -f $(if ($hasPortal) { 'present' } else { "absent - PORTAL filter will be hidden" }))
 
 # ================================================================ SANITIZE
 # Everything below this block only ever sees scrubbed values. PPI is destroyed
@@ -205,8 +217,11 @@ if (-not $SkipSanitizedCsv) {
     $sanDir = Join-Path $root 'sanitized'
     if (-not (Test-Path $sanDir)) { New-Item -ItemType Directory -Force -Path $sanDir | Out-Null }
     $sanPath = Join-Path $sanDir ([IO.Path]::GetFileNameWithoutExtension($Source) + '.sanitized.csv')
+    # Insurance Portal joins the list; Encounter Provider does not (see above).
+    $sanCols = @($COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON)
+    if ($hasPortal) { $sanCols += $COL_PORTAL }
     $rows |
-        Select-Object $COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON |
+        Select-Object $sanCols |
         Export-Csv -LiteralPath $sanPath -NoTypeInformation -Encoding utf8
     Write-Host ("Sanitized copy: {0}" -f $sanPath) -ForegroundColor DarkGray
 }
@@ -225,6 +240,21 @@ function Normalize-Type {
         '^procedure$'   { return 'Procedure' }
         default         { return [cultureinfo]::InvariantCulture.TextInfo.ToTitleCase($v.ToLower()) }
     }
+}
+
+# Portal names are payer/vendor brands (IEHP, EzNet, Medpoint), so they are NOT
+# title-cased the way Type is - that would turn IEHP into Iehp. Whitespace is
+# collapsed and casing is left exactly as the export wrote it.
+#
+# A blank portal is a real answer, not missing data: ~32% of rows are blank and
+# 24k of those are 'Auth Not Required', i.e. no portal was ever involved. Only 2
+# of ~19.5k RPA-touched rows are blank, so this bucket is almost entirely manual
+# work that needed no portal.
+function Normalize-Portal {
+    param([string] $Value)
+    $v = (("$Value") -replace '\s+', ' ').Trim()
+    if (-not $v) { return '(Blank)' }
+    return $v
 }
 
 function Normalize-Status {
@@ -329,6 +359,7 @@ $BUCKETS = @('bot_ok', 'bot_retry_ok', 'bot_fail', 'human')
 $typeIdx   = [ordered]@{}
 $statusIdx = [ordered]@{}
 $reasonIdx = [ordered]@{}
+$portalIdx = [ordered]@{}
 $dateIdx   = [ordered]@{}
 $cells     = @{}
 
@@ -377,8 +408,9 @@ foreach ($r in $rows) {
     $ti = Get-Index $typeIdx   (Normalize-Type   -Value "$($r.$COL_TYPE)")
     $si = Get-Index $statusIdx (Normalize-Status -Value "$($r.$COL_STATUS)")
     $ri = if ($reason) { Get-Index $reasonIdx $reason } else { -1 }
+    $pi = if ($hasPortal) { Get-Index $portalIdx (Normalize-Portal -Value "$($r.$COL_PORTAL)") } else { -1 }
 
-    $key = "$di|$ti|$si|$b|$ri"
+    $key = "$di|$ti|$si|$b|$ri|$pi"
     if ($cells.ContainsKey($key)) { $cells[$key]++ } else { $cells[$key] = 1 }
 }
 
@@ -407,20 +439,40 @@ function Get-OrderedKeys {
 $typeOrder   = Get-OrderedKeys $typeIdx   @('Appointment', 'Diagnostic', 'Procedure', 'Referral')
 $statusOrder = Get-OrderedKeys $statusIdx @('Auth Approved', 'Auth Not Required', 'Auth Denied', 'Auth Blocked')
 
+# Portals get no hand-written preferred list: the roster is the payer's to
+# change, and a new portal appearing in an export must sort somewhere sensible
+# on its own. Alphabetical, with '(Blank)' forced to the end so the 'no portal
+# involved' bucket never leads the checkbox list.
+$portalOrder = @($portalIdx.Keys | Sort-Object `
+    @{ Expression = { if ($_ -eq '(Blank)') { 1 } else { 0 } } }, `
+    @{ Expression = { $_ } })
+
 $typeRemap = @{};   for ($i = 0; $i -lt $typeOrder.Count;   $i++) { $typeRemap[$typeIdx[$typeOrder[$i]]]     = $i }
 $statusRemap = @{}; for ($i = 0; $i -lt $statusOrder.Count; $i++) { $statusRemap[$statusIdx[$statusOrder[$i]]] = $i }
+$portalRemap = @{}; for ($i = 0; $i -lt $portalOrder.Count; $i++) { $portalRemap[$portalIdx[$portalOrder[$i]]] = $i }
 
+# Fact tuple: [date, type, status, bucket, reason, COUNT, portal]
+#
+# The portal index is APPENDED AFTER the count rather than slotted in with the
+# other dimensions, which is the wrong shape semantically and deliberate anyway.
+# GitHub Pages serves a stale data.json for up to ~10 minutes after a push, so
+# the new index.html and the old data.json are guaranteed to meet. Keeping the
+# count at index 5 means that pairing renders the previous dashboard exactly and
+# just hides the PORTAL filter; moving the count to index 6 would have turned
+# every number on the page into NaN for those minutes.
 $facts = [System.Collections.Generic.List[object]]::new()
 foreach ($k in $cells.Keys) {
     $p = $k -split '\|'
-    $facts.Add(@(
+    $row = @(
         $dateRemap[[int]$p[0]],
         $typeRemap[[int]$p[1]],
         $statusRemap[[int]$p[2]],
         [int]$p[3],
         [int]$p[4],
         $cells[$k]
-    ))
+    )
+    if ($hasPortal) { $row += $portalRemap[[int]$p[5]] }
+    $facts.Add($row)
 }
 # Sort by the remapped (chronological) date index.
 $facts = [System.Collections.Generic.List[object]](@($facts | Sort-Object { $_[0] }))
@@ -439,6 +491,9 @@ $payload = [ordered]@{
     dates        = $dateOrder
     types        = $typeOrder
     statuses     = $statusOrder
+    # Always emitted. Empty means "this export has no Insurance Portal column",
+    # which is the single condition the client tests to hide the PORTAL filter.
+    portals      = @(if ($hasPortal) { $portalOrder } else { @() })
     reasons      = @($reasonIdx.Keys)
     facts        = $facts
 }
@@ -469,10 +524,18 @@ foreach ($label in $reasonIdx.Keys) {
     elseif ($label -match '(?i)member\s*id\s*[:\-]\s*\S') { $leaks += "member id phrasing: '$label'" }
     elseif ($label -match '(?i)authorization number is') { $leaks += "auth number phrasing: '$label'" }
 }
+# Portal labels pass through from the export verbatim - unlike reasons, this
+# label set is OPEN, because the payer roster is not ours to close. So the same
+# identifier checks that guard the reason labels have to cover these too.
+foreach ($label in $portalOrder) {
+    if ($label -match '\d{3,}') { $leaks += "digit run in portal: '$label'" }
+    elseif ($label.Length -gt 40) { $leaks += "portal label too long to be a brand name: '$label'" }
+}
+
 # Coordinator names must not survive anywhere in the published dimensions.
 foreach ($n in $personNames) {
     if ($n.Length -lt 4) { continue }
-    foreach ($label in (@($reasonIdx.Keys) + @($typeOrder) + @($statusOrder))) {
+    foreach ($label in (@($reasonIdx.Keys) + @($typeOrder) + @($statusOrder) + @($portalOrder))) {
         if ($label -imatch ('\b' + [regex]::Escape($n) + '\b')) { $leaks += "coordinator name '$n' in '$label'" }
     }
 }
@@ -483,7 +546,7 @@ if ($leaks.Count) {
     $leaks | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     throw "Potential identifiers survived normalization. Add a rule to `$REASON_RULES for the pattern(s) above, then re-run."
 }
-Write-Host "Publish gate: no identifier-like text in $($reasonIdx.Count) reason categories." -ForegroundColor DarkGray
+Write-Host ("Publish gate: no identifier-like text in {0} reason categories / {1} portals." -f $reasonIdx.Count, $portalOrder.Count) -ForegroundColor DarkGray
 
 # ------------------------------------------------- repo gate (documentation too)
 # data.json is not the only thing that gets pushed. Documenting a new failure
