@@ -19,15 +19,24 @@
     Path to write. Defaults to docs/data.json beside this script (docs/ is the
     folder GitHub Pages publishes).
 
+.PARAMETER NoEncrypt
+    Write data.json as plaintext instead of encrypting it. For local preview
+    only - a plaintext data.json on GitHub Pages is world-readable, which is
+    what the access gate exists to prevent. Without this switch the build
+    REQUIRES dashboard.passphrase.txt and fails if it is missing, so the gate
+    can never be dropped by accident.
+
 .EXAMPLE
     .\Build-Dashboard.ps1
     .\Build-Dashboard.ps1 -Source .\Orders_and_Appointments_Dashboard.xlsx
+    .\Build-Dashboard.ps1 -NoEncrypt        # local preview, DO NOT PUBLISH
 #>
 [CmdletBinding()]
 param(
     [string] $Source,
     [string] $OutFile,
-    [switch] $SkipSanitizedCsv
+    [switch] $SkipSanitizedCsv,
+    [switch] $NoEncrypt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +61,45 @@ if (-not $OutFile) { $OutFile = Join-Path $root 'docs\data.json' }
 
 Write-Host "Source : $Source"
 Write-Host "Output : $OutFile"
+
+# ---------------------------------------------------------------- access gate key
+# Resolved HERE, before any of the expensive work, so a missing passphrase costs
+# a second rather than a full build. Unlike the portal column and the hard-schedule
+# roster - both of which degrade to a working dashboard when absent - this one
+# FAILS CLOSED. Degrading would mean silently publishing a plaintext data.json to
+# a public URL, i.e. exactly the exposure the gate exists to close, and it would
+# do it without anyone noticing. -NoEncrypt is the explicit opt-out.
+$PASS_FILE  = Join-Path $root 'dashboard.passphrase.txt'
+$passphrase = $null
+if (-not $NoEncrypt) {
+    if (-not (Test-Path -LiteralPath $PASS_FILE)) {
+        throw @"
+No passphrase file at $PASS_FILE, so data.json cannot be encrypted.
+
+docs/data.json is served from a public GitHub Pages URL and is fetchable
+directly, so publishing it unencrypted makes every figure world-readable
+regardless of what index.html does.
+
+Fix one of two ways:
+  1. Create the file with the passphrase as its only line (it is gitignored):
+       Set-Content -LiteralPath '$PASS_FILE' -Value '<passphrase>' -NoNewline
+  2. Re-run with -NoEncrypt for a LOCAL preview you will not publish.
+"@
+    }
+    # Trailing newlines are the easy mistake here: a passphrase that round-trips
+    # through Notepad picks up a CRLF, and the browser-side passphrase won't have
+    # one, so the key derivation would silently differ and every unlock would fail
+    # with "wrong passphrase" while looking correct on both sides.
+    $passphrase = ([IO.File]::ReadAllText($PASS_FILE)).Trim()
+    if (-not $passphrase) { throw "$PASS_FILE is empty. Put the passphrase on the first line, or re-run with -NoEncrypt." }
+    if ($passphrase.Length -lt 12) {
+        # The published ciphertext can be attacked offline at the attacker's own
+        # pace, so passphrase length is the only thing standing between the file
+        # and a dictionary run. PBKDF2 raises the cost per guess; it does not
+        # rescue a short passphrase.
+        Write-Host ("WARNING: passphrase is only {0} characters. The published ciphertext is downloadable, so it can be attacked offline - use 4+ random words." -f $passphrase.Length) -ForegroundColor Yellow
+    }
+}
 
 # ---------------------------------------------------------------- load rows
 # .xlsx is converted to a temp CSV via Excel COM; .csv is read directly.
@@ -747,6 +795,86 @@ if ($repoLeaks.Count) {
 }
 Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms / {3} provider names." -f `
     $repoFiles.Count, $exportIds.Count, $nameParts.Count, $providerValues.Count) -ForegroundColor DarkGray
+
+# ---------------------------------------------------------------- encrypt output
+# DELIBERATELY the last step, after both gates.
+#
+# The repo gate above reads $OutFile off disk and scans it token by token for
+# export identifiers. Ciphertext base64 contains no recognizable tokens, so
+# encrypting before the gate would leave it scanning noise and passing
+# vacuously - the same failure mode the $exportIds guard exists to prevent. The
+# gates get the plaintext; only what actually ships is encrypted.
+#
+# The encryption is NOT a substitute for those gates. It keeps the aggregates
+# off the open web; the gates are what keep identifiers out of the aggregates in
+# the first place. A leak that got past them would be encrypted, published, and
+# still a leak the moment anyone with the passphrase looked.
+if ($NoEncrypt) {
+    Write-Host ""
+    Write-Host "DATA.JSON IS PLAINTEXT (-NoEncrypt)." -ForegroundColor Red
+    Write-Host "  Fine for a local preview. Pushing this file publishes every figure to anyone with the URL." -ForegroundColor Red
+} else {
+    # AES-256-GCM. The IV and salt are fresh per build and stored beside the
+    # ciphertext, which is normal - neither is secret, and reusing a GCM IV
+    # across builds under one key is the actual thing to avoid.
+    $iterations = 310000   # OWASP floor for PBKDF2-HMAC-SHA256.
+    $salt = [byte[]]::new(16)
+    $iv   = [byte[]]::new(12)
+    $rng  = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($salt); $rng.GetBytes($iv) } finally { $rng.Dispose() }
+
+    $kdf = [System.Security.Cryptography.Rfc2898DeriveBytes]::new(
+        $passphrase, $salt, $iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    try { $key = $kdf.GetBytes(32) } finally { $kdf.Dispose() }
+
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $cipher = [byte[]]::new($plainBytes.Length)
+    $tag    = [byte[]]::new(16)
+    # Explicit tag size: the single-argument AesGcm constructor is obsolete on
+    # current .NET, and naming 16 here also documents what the client must split.
+    $gcm = [System.Security.Cryptography.AesGcm]::new($key, 16)
+    try { $gcm.Encrypt($iv, $plainBytes, $cipher, $tag, $null) } finally { $gcm.Dispose() }
+
+    # Web Crypto's AES-GCM expects ONE buffer with the tag appended to the
+    # ciphertext; .NET returns them separately. Concatenating in this order is
+    # what makes crypto.subtle.decrypt accept the result, and getting it backwards
+    # fails as an indistinguishable "wrong passphrase" in the browser.
+    $combined = [byte[]]::new($cipher.Length + $tag.Length)
+    [Array]::Copy($cipher, 0, $combined, 0, $cipher.Length)
+    [Array]::Copy($tag, 0, $combined, $cipher.Length, $tag.Length)
+
+    # 'enc' is the field the client tests to tell an encrypted payload from a
+    # plaintext one, so it must never collide with a real payload key.
+    $envelope = [ordered]@{
+        enc  = 'AES-GCM'
+        v    = 1
+        kdf  = 'PBKDF2-SHA256'
+        iter = $iterations
+        salt = [Convert]::ToBase64String($salt)
+        iv   = [Convert]::ToBase64String($iv)
+        ct   = [Convert]::ToBase64String($combined)
+    }
+    [IO.File]::WriteAllText($OutFile, ($envelope | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+
+    # Proves the published bytes actually decrypt with the passphrase on disk,
+    # rather than trusting that they do. A build that encrypts under a mangled
+    # passphrase is indistinguishable from a correct one until someone tries to
+    # open the dashboard - by which point it is already pushed.
+    $vk = [System.Security.Cryptography.Rfc2898DeriveBytes]::new(
+        $passphrase, $salt, $iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    try { $vkey = $vk.GetBytes(32) } finally { $vk.Dispose() }
+    $rt = [byte[]]::new($cipher.Length)
+    $vg = [System.Security.Cryptography.AesGcm]::new($vkey, 16)
+    try { $vg.Decrypt($iv, $cipher, $tag, $rt, $null) } finally { $vg.Dispose() }
+    if ([Text.Encoding]::UTF8.GetString($rt) -ne $json) {
+        Remove-Item -LiteralPath $OutFile -Force
+        throw "Round-trip check failed - the encrypted data.json did not decrypt back to the payload. Output deleted; nothing is safe to push."
+    }
+
+    Write-Host ("Encrypted      : AES-256-GCM, PBKDF2-SHA256 x{0:N0}, round-trip verified ({1:N0} KB ciphertext)" -f `
+        $iterations, ($combined.Length / 1KB)) -ForegroundColor Green
+    Write-Host ("Passphrase     : {0} ({1} chars) - viewers need this to open the dashboard" -f (Split-Path -Leaf $PASS_FILE), $passphrase.Length) -ForegroundColor DarkGray
+}
 
 # ---------------------------------------------------------------- console summary
 # "Schedule auths" spans every label the Appointment type can appear under, so

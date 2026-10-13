@@ -23,6 +23,26 @@ GitHub Pages  ->  Notion /embed block
 
 ---
 
+## ⚠️ Read this before you push anything
+
+The raw export is **not** safe to publish. `Bot Run Fail Reason` carries member
+identifiers and authorization numbers inside the error text, and `RC Assigned`
+carries coordinator full names and user IDs. The shapes to watch for, written
+here with **invented** values — every example in this file is synthetic, never
+copied from an export:
+
+```
+The Referral is already submitted Member ID: <11-digit number>
+Member Id is not found-<digits + letter + digits>
+There is a previous authorization on file.The authorization number is: A<8 digits>
+<First Last> <First Last> <8 digits>.<4 chars>
+```
+
+Member IDs are HIPAA identifiers. Publishing them to a public GitHub Pages site
+is effectively irreversible — crawlers and CDN caches retain content even after a
+force-push or repo deletion. That applies to this README too: **do not paste real
+error text into it** when adding a rule. Describe the pattern instead.
+
 ### PPI is removed at ingest
 
 The build strips identifiers **first**, before normalizing or aggregating
@@ -197,6 +217,65 @@ Other switches:
 |---|---|
 | `-OutFile <path>` | Write the aggregate JSON somewhere other than `docs\data.json`. |
 | `-SkipSanitizedCsv` | Don't write the `sanitized/` row-level copy. Sanitization itself still happens — it cannot be skipped. |
+| `-NoEncrypt` | Write `data.json` as plaintext. **Local preview only** — see below. |
+
+---
+
+## The access gate
+
+GitHub Pages has no server, so there is nothing to log in *to*. A JavaScript
+password prompt alone would be decoration: `data.json` is fetched by the
+browser, so anyone could skip the page and request
+`…/Prior_Auth_Dashboard/data.json` directly.
+
+So the file itself is the lock. `data.json` is published as **AES-256-GCM
+ciphertext**; the passphrase derives the key in the browser via PBKDF2-SHA256
+(310,000 iterations) and decrypts it there. The published file is unreadable
+without the passphrase, and GitHub Pages is still just serving a static file.
+
+### Setting the passphrase
+
+Put it on the first line of `dashboard.passphrase.txt` beside the build script:
+
+```powershell
+Set-Content -LiteralPath .\dashboard.passphrase.txt -Value '<passphrase>' -NoNewline
+```
+
+The file is gitignored, same as `providers.hard.txt` — committing it would
+publish the lock and the key together. Use **four or more random words**: the
+ciphertext is downloadable, so a short passphrase can be attacked offline at
+the attacker's own pace. PBKDF2 raises the cost per guess; it cannot rescue a
+weak passphrase.
+
+Without that file the build **fails** rather than falling back to plaintext.
+That is deliberate: the portal column and the provider roster both degrade to a
+working dashboard when absent, but degrading *this* would silently publish
+every figure to a public URL. `-NoEncrypt` is the explicit opt-out, for local
+preview — never push its output.
+
+### Rotating it
+
+Edit `dashboard.passphrase.txt`, re-run the build, publish the new
+`data.json`. Everyone's saved session stops working on the next load and they
+are prompted again. Note that rotation is **not retroactive**: a `data.json`
+that was already published in the clear stays readable in git history and in
+whatever caches picked it up.
+
+### What this does and does not buy you
+
+| | |
+|---|---|
+| ✅ | Keeps the aggregates off the open web and out of search indexes. |
+| ✅ | Works inside a Notion embed, which real SSO does not (see below). |
+| ✅ | No hosting change, no new service, no cost. |
+| ❌ | One shared passphrase — no per-person access and no audit of who looked. |
+| ❌ | No revocation for one person; rotating cuts off everyone at once. |
+| ❌ | Not a substitute for the publish/repo gates. Those keep identifiers out of the aggregates; this only keeps the aggregates private. An identifier that slipped past them would be encrypted, published, and still a leak to anyone holding the passphrase. |
+
+If you later need per-person access and an audit trail, that means moving off
+GitHub Pages to a host with real auth (e.g. Cloudflare Pages + Cloudflare
+Access) — and accepting that the Notion embed degrades, because an identity
+provider's login page sets `X-Frame-Options` and cannot render in an iframe.
 
 ---
 
@@ -217,8 +296,10 @@ obvious ones — the layout is already correct.)
    `Serve-Dashboard.ps1` so the pipeline is reproducible.
 4. Commit to `main`.
 
-> Do **not** upload the `.xlsx` / `.csv` export, the `sanitized` folder, or
-> the `_shots` folder.
+> Do **not** upload the `.xlsx` / `.csv` export, the `sanitized` folder, the
+> `_shots` folder, `providers.hard.txt`, or `dashboard.passphrase.txt`.
+> The last one is the key to `data.json` — uploading it alongside the
+> encrypted file would undo the access gate entirely.
 
 ### 2. Turn on Pages
 
@@ -254,6 +335,27 @@ cache-busts the fetch so you won't see stale numbers.
    bottom edge down until the whole dashboard is visible — roughly 1,600–2,000px
    for the full view. Notion embeds don't auto-size to content.
 4. Optional: click the `⋮⋮` handle → **Full width** so the charts get more room.
+
+### Unlocking it inside Notion
+
+Viewers get the passphrase prompt in the embed itself and tick **Remember on
+this browser for 30 days**. This works in an iframe precisely because nothing
+leaves the page — there is no redirect to an identity provider, and an IdP
+login page could not render in an iframe anyway.
+
+Two browser behaviours to expect, neither of which the page can change:
+
+- **The 30 days are per browser, and Notion counts as its own context.**
+  Browsers partition storage for embedded iframes, so unlocking inside Notion
+  and unlocking the dashboard's own URL are two separate sessions. Someone who
+  uses both will be asked twice.
+- **Safari may not remember it at all.** Safari blocks storage for third-party
+  iframes by default, so the tick box silently has no effect there and the
+  prompt returns on each load. The dashboard still works — it just asks every
+  time. Chrome and Edge persist it normally.
+
+Make the embed block tall enough that the prompt isn't clipped; the gate needs
+roughly 420px even though the dashboard itself wants 1,600–2,000px.
 
 ### Useful URL parameters
 

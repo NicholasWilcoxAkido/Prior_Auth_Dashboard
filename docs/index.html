@@ -248,10 +248,63 @@ td:first-child { color: var(--ink); }
 }
 /* Texture is the backup identity channel: opt-in, or forced. */
 @media print { .filters, .tbtn { display: none !important; } }
+
+/* ---------------------------------------------------------------- access gate
+   Shown only when data.json comes back encrypted and no remembered passphrase
+   is available. min-height rather than a viewport-height centre: inside a
+   Notion /embed the iframe is whatever height the block was dragged to, and
+   100vh there measures the iframe, not the screen - at a short block height
+   that clips the form. A fixed min-height is predictable in both contexts. */
+.gate { display: none; min-height: 420px; align-items: center; justify-content: center; padding: 40px 16px; }
+.gate.on { display: flex; }
+#root.locked .wrap { display: none; }
+.gatebox { width: 100%; max-width: 340px; }
+.gatebox h2 { font-size: 17px; margin: 0 0 6px; color: var(--ink); }
+.gatesub { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; margin: 0 0 18px; }
+.gatelab { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 6px; }
+.gateinput {
+  width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 14px;
+  font-family: inherit; color: var(--ink); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 5px;
+}
+.gateinput:focus { outline: 2px solid var(--series-1); outline-offset: 1px; border-color: var(--series-1); }
+.gateremember { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); margin: 11px 0 16px; cursor: pointer; }
+.gatebtn {
+  width: 100%; padding: 9px 10px; font-size: 13px; font-weight: 600;
+  font-family: inherit; color: var(--surface-1); background: var(--ink);
+  border: 1px solid var(--ink); border-radius: 5px; cursor: pointer;
+}
+.gatebtn:hover { opacity: 0.88; }
+.gatebtn[disabled] { opacity: 0.5; cursor: default; }
+/* --bad carries the error on its own; the leading glyph is the redundant
+   channel, so the message does not depend on color alone. */
+.gateerr { font-size: 12.5px; color: var(--bad); line-height: 1.55; margin: 13px 0 0; }
+.gatenote { font-size: 11.5px; color: var(--muted); line-height: 1.55; margin: 13px 0 0; }
 </style>
 </head>
 <body>
 <div class="viz-root" id="root">
+
+<!-- Access gate. Inert until the loader finds an encrypted data.json, so a
+     plaintext build (-NoEncrypt) and an already-remembered browser never see it. -->
+<div class="gate" id="gate">
+  <form class="gatebox" id="gateForm">
+    <h2>Prior Authorization Dashboard</h2>
+    <p class="gatesub">This dashboard is restricted. Enter the passphrase to view it.</p>
+    <label class="gatelab" for="gatePass">Passphrase</label>
+    <!-- type=password + current-password lets a password manager fill it; the
+         value is only ever used to derive a key in this tab. -->
+    <input class="gateinput" id="gatePass" type="password" autocomplete="current-password"
+           spellcheck="false" autocapitalize="off" autocorrect="off" />
+    <label class="gateremember">
+      <input type="checkbox" id="gateRemember" checked /> Remember on this browser for 30 days
+    </label>
+    <button class="gatebtn" type="submit" id="gateBtn">Unlock</button>
+    <p class="gateerr" id="gateErr" role="alert" hidden></p>
+    <p class="gatenote" id="gateNote" hidden></p>
+  </form>
+</div>
+
 <div class="wrap">
 
   <div class="head">
@@ -1622,10 +1675,10 @@ function boot(data) {
     + " · dated on " + (D.dateBasis || "Date Auth Completed Roll Up")
     + ", covering " + longDate(D.dateMin) + " to " + longDate(D.dateMax) + ".";
 
-  /* ?theme=dark|light pins the theme - useful for a Notion embed URL */
+  /* ?theme= is NOT read here - it is applied at parse time by applyThemeParam()
+     below, because the access gate renders before boot() ever runs and would
+     otherwise ignore a pinned theme. */
   var q = new URLSearchParams(location.search);
-  var th = q.get("theme");
-  if (th === "dark" || th === "light") document.documentElement.setAttribute("data-theme", th);
   var qp = q.get("range");
   if (qp) {
     qp = qp.toLowerCase();
@@ -1691,6 +1744,123 @@ function fail(msg, detail) {
   }
 }
 
+/* ---------------------------------------------------------------- access gate
+   data.json ships as AES-256-GCM ciphertext (see the encrypt step in
+   Build-Dashboard.ps1). The passphrase never leaves this tab: it derives the
+   key locally, so GitHub Pages is still serving a dumb static file and there is
+   no server to authenticate against. That is the whole reason this works inside
+   a Notion /embed - there is no redirect to an identity provider, and an IdP
+   login page sets X-Frame-Options and cannot render in an iframe at all.
+
+   A plaintext data.json still boots straight through. That keeps -NoEncrypt
+   previews working, and it covers the ~10 minute window where the Pages CDN
+   pairs a new index.html with the previous data.json. */
+/* ?theme=dark|light pins the theme - useful for a Notion embed URL. Applied
+   HERE rather than in boot(), because the access gate can be on screen for as
+   long as it takes someone to find the passphrase, and boot() does not run
+   until after they do. Pinning it in boot() left the login screen rendering in
+   the system theme - a white card in a dark Notion workspace. */
+(function applyThemeParam() {
+  var th = new URLSearchParams(location.search).get("theme");
+  if (th === "dark" || th === "light") document.documentElement.setAttribute("data-theme", th);
+})();
+
+var GATE_STORE = "pa_dash_gate_v1";
+var GATE_DAYS  = 30;
+
+/* Every localStorage touch is wrapped. A Notion /embed is a third-party iframe:
+   Safari throws outright on storage access there, Chrome and Firefox partition
+   it to the notion.so top-level context. An uncaught throw would take down the
+   whole dashboard, so a blocked store degrades to "ask every time" instead.
+
+   Consequence worth knowing: because storage is partitioned, unlocking inside
+   Notion and unlocking the dashboard's own URL are two separate 30-day
+   sessions. That is the browser's doing, not something this page can defeat. */
+function gateLoad() {
+  try {
+    var o = JSON.parse(localStorage.getItem(GATE_STORE));
+    if (!o || !o.p || !o.exp) return null;
+    if (Date.now() > o.exp) { gateClear(); return null; }
+    return o.p;
+  } catch (e) { return null; }
+}
+function gateSave(pass) {
+  try {
+    localStorage.setItem(GATE_STORE, JSON.stringify({ p: pass, exp: Date.now() + GATE_DAYS * 864e5 }));
+  } catch (e) { /* partitioned or blocked - the session just will not persist */ }
+}
+function gateClear() { try { localStorage.removeItem(GATE_STORE); } catch (e) {} }
+
+function b64bytes(s) {
+  var bin = atob(s), out = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/* Rejects on a wrong passphrase: AES-GCM authenticates, so a bad key fails the
+   tag check rather than returning garbage. There is no separate "is this the
+   right passphrase" test to run, and none is needed. */
+function decryptPayload(env, pass) {
+  var raw = new TextEncoder().encode(pass);
+  return crypto.subtle.importKey("raw", raw, { name: "PBKDF2" }, false, ["deriveKey"])
+    .then(function (base) {
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: b64bytes(env.salt), iterations: env.iter, hash: "SHA-256" },
+        base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    })
+    .then(function (key) {
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: b64bytes(env.iv) }, key, b64bytes(env.ct));
+    })
+    .then(function (buf) { return JSON.parse(new TextDecoder().decode(buf)); });
+}
+
+function showGate(env, msg) {
+  var g = $("gate"), err = $("gateErr"), note = $("gateNote");
+  $("root").classList.add("locked");
+  g.classList.add("on");
+  if (msg) { err.textContent = "⚠ " + msg; err.hidden = false; } else { err.hidden = true; }
+
+  /* crypto.subtle is absent outside a secure context. https and localhost both
+     qualify, so in practice this is the file:// case - worth naming explicitly
+     because "Unlock does nothing" is otherwise very hard to diagnose. */
+  if (!(window.crypto && crypto.subtle)) {
+    err.textContent = "⚠ This browser is not in a secure context, so it cannot decrypt the data. "
+      + (location.protocol === "file:"
+          ? "Opening index.html straight from disk does this. Run Serve-Dashboard.ps1 and use the URL it prints."
+          : "Load the dashboard over https.");
+    err.hidden = false;
+    $("gateBtn").disabled = true;
+    return;
+  }
+
+  var f = $("gateForm"), pw = $("gatePass"), btn = $("gateBtn");
+  f.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var pass = pw.value;
+    if (!pass) return;
+    btn.disabled = true;
+    btn.textContent = "Unlocking…";
+    note.textContent = "Deriving the key - this takes a moment by design.";
+    note.hidden = false;
+
+    decryptPayload(env, pass).then(function (data) {
+      if ($("gateRemember").checked) gateSave(pass);
+      pw.value = "";
+      g.classList.remove("on");
+      $("root").classList.remove("locked");
+      boot(data);
+    }).catch(function () {
+      btn.disabled = false;
+      btn.textContent = "Unlock";
+      note.hidden = true;
+      err.textContent = "⚠ That passphrase did not work. Check it and try again.";
+      err.hidden = false;
+      pw.select();
+    });
+  });
+  pw.focus();
+}
+
 /* The timestamp defeats the GitHub Pages CDN, which otherwise serves a stale
    data.json for up to ~10 minutes after a refresh push. */
 fetch("data.json?t=" + Date.now(), { cache: "no-store" })
@@ -1698,7 +1868,21 @@ fetch("data.json?t=" + Date.now(), { cache: "no-store" })
     if (!r.ok) throw new Error("HTTP " + r.status + " fetching data.json");
     return r.json();
   })
-  .then(boot)
+  .then(function (payload) {
+    if (!payload || !payload.enc) { boot(payload); return; }   /* plaintext build */
+
+    var saved = gateLoad();
+    if (!saved) { showGate(payload); return; }
+    /* A remembered passphrase still has to decrypt THIS build. It can fail
+       legitimately - the passphrase was rotated since - so that falls back to
+       the prompt rather than reporting a broken dashboard. */
+    decryptPayload(payload, saved)
+      .then(boot)
+      .catch(function () {
+        gateClear();
+        showGate(payload, "The saved passphrase no longer works - it may have been changed. Please enter it again.");
+      });
+  })
   .catch(function (e) {
     var localFile = location.protocol === "file:";
     fail(localFile
