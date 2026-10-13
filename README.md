@@ -5,6 +5,7 @@ authorizations, built to be embedded in Notion via GitHub Pages.
 
 ```
 Orders_and_Appointments_Dashboard.xlsx   <- the periodic export (NEVER committed)
+providers.hard.txt                       <- hard-schedule roster (NEVER committed)
           |
           |  Build-Dashboard.ps1
           |    1. sanitize   <- strip PPI at ingest, before anything else
@@ -61,22 +62,39 @@ and vendor brand names (`Aerial`, `IEHP`, `Medpoint`, …), which carry nothing
 about a member. Unlike failure reasons, that label set is **open**, because the
 payer roster isn't ours to close, so the publish gate scans portal labels for
 digit runs and coordinator names exactly as it scans the rest.
-`Encounter Provider` is **not read anywhere in the build** — provider names are
-a fresh PPI surface and no metric asks for them yet, so the cheapest way to keep
-them out of a published file is to never load the column at all.
+`Encounter Provider` holds provider **names**, the same class of personal data as
+the coordinator names in `RC Assigned`, so it is never published in any form.
+It is read for exactly one purpose — deciding whether an Appointment is an *easy*
+or a *hard* schedule — and that decision is made during the sanitize stage, which
+overwrites the column in place with the single word `Easy`, `Hard` or `(n/a)`.
+Nothing downstream of ingest can see a provider name, so nothing downstream can
+publish one.
+
+**The roster that drives the split is deliberately not in the code.**
+`Build-Dashboard.ps1` is pushed to this public repo; a list of provider surnames
+hardcoded in it would be published just as surely as if it were in `data.json`.
+The patterns live in `providers.hard.txt`, which is **gitignored**, and the build
+reads it at run time. The consequence is worth knowing: a fresh clone of this
+repo has no roster, so it builds a single undivided `Appointment` type and says
+so on the console. That is the intended degradation, not a bug — the published
+artifact is identical either way apart from the two labels.
 
 A PPI-free row-level copy is written to
 `sanitized/<name>.sanitized.csv` so you can inspect or share the data without
 touching the original export (which is never modified). It includes
-`Insurance Portal` and excludes `Encounter Provider`, for the reason above. Pass
+`Insurance Portal` as-is, and includes the Easy/Hard verdict under the renamed
+header `Schedule Class` — renamed because by that point the column holds a
+verdict, not a provider, and a column labelled `Encounter Provider` containing
+the word `Hard` invites someone to re-join it to a name later. Pass
 `-SkipSanitizedCsv` to skip writing it. That folder is gitignored.
 
-### Four safeguards. Do not disable them.
+### Five safeguards. Do not disable them.
 
 1. **Ingest sanitization**, above — identifiers are destroyed before the data
    is used for anything.
-2. **`.gitignore` blocks `*.xlsx` / `*.csv` / `sanitized/`** so neither the
-   source export nor a row-level copy can be committed by accident.
+2. **`.gitignore` blocks `*.xlsx` / `*.csv` / `sanitized/` / `providers.hard.txt`**
+   so neither the source export, a row-level copy, nor the provider roster can be
+   committed by accident.
 3. **The published label set is closed.** `Normalize-Reason` returns one of
    ~35 fixed category labels or the literal `Other / unclassified`. Input text
    is **never echoed through**, so a brand-new failure message carrying an
@@ -85,10 +103,18 @@ touching the original export (which is never modified). It includes
    there is no row-level field for an identifier to occupy.
 4. **A publish gate** asserts every emitted label is in the closed set, then
    scans all labels for digit runs, ID phrasing, and any harvested coordinator
-   name. If anything suspicious survives, the build **deletes its own output and
-   fails** rather than emit a publishable file. (Verified non-trivial: the gate
-   rejects **766 of the 911** distinct raw reason strings in the current export,
-   and **0** of the 40 published labels or 11 published portals.)
+   or provider name. If anything suspicious survives, the build **deletes its own
+   output and fails** rather than emit a publishable file. (Verified non-trivial:
+   the gate rejects **766 of the 911** distinct raw reason strings in the current
+   export, and **0** of the 40 published labels or 11 published portals.)
+5. **A repo gate** scans the six publishable files — `README.md` and
+   `Build-Dashboard.ps1` included — against the identifiers, coordinator names and
+   89 provider names present in *this* export, plus the roster patterns
+   themselves. Documenting a feature is the moment someone pastes a real value in
+   as an example, and this gate is not theoretical: it caught a comment in
+   `Build-Dashboard.ps1` that illustrated the hyphen-matching rule with a real
+   provider's surname, and refused to finish the build until it was rewritten as a
+   shape.
 
 If `Other / unclassified` starts growing, that is the signal to add a rule to
 `$REASON_RULES` in `Build-Dashboard.ps1` — the data is still safe, just less
@@ -114,9 +140,15 @@ When a new export arrives:
 
    ```
    Insurance Portal: present
+   Encounter Provider: present - splitting Appointment on 7 roster pattern(s)
    Sanitized: RC Assigned -> 13952 bot / 93458 human / 4 unassigned
               (67 coordinator names discarded)
    Sanitized: 840 fail reasons had names/identifiers redacted
+   Sanitized: Encounter Provider -> 14739 hard / 46641 easy / 46034 n-a
+              (89 provider names discarded)
+     roster pattern #1: 2,086 rows
+     roster pattern #2: 2,645 rows
+     ...
    Date basis     : Date Auth Completed Roll Up
    Rows aggregated: 107393  (dropped for unparsable date: 0,
                              dated after the 2026-10-13 pull: 21)
@@ -126,6 +158,14 @@ When a new export arrives:
    **Check the `Insurance Portal` line.** `absent` means the export predates
    V1.07 or the column was renamed; the build still succeeds and the dashboard
    simply hides the PORTAL filter rather than failing.
+
+   **Check the roster pattern counts.** They are printed by position, never by
+   name — line them up against `providers.hard.txt`. A pattern showing **0 rows**
+   is the thing to act on: either that provider has left, or their name is spelled
+   differently in this export, and in both cases their appointments are silently
+   counting as *easy*. A pattern whose count looks far too large is the opposite
+   failure — it's short enough to be matching providers you didn't intend, since
+   matching is "contains", not "equals".
 
    **Check the `Date basis` line.** If it ever says anything other than
    `Date Auth Completed Roll Up`, every chart has silently changed meaning —
@@ -223,7 +263,7 @@ Append these to the embed URL to control the initial view:
 |---|---|---|
 | `?theme=` | `dark`, `light` | Pins the theme. Use `dark` to match a dark Notion workspace — the embed can't detect Notion's theme on its own. |
 | `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `ytd`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
-| `?type=` | `Appointment`, `Diagnostic`, `Procedure`, `Referral`, `all` — or a comma-separated list | Sets the opening Type filter. Both filters are multi-select, so `?type=Appointment,Referral` opens with two Types included. A single value still works, so existing embeds are unchanged. A value this export doesn't contain is ignored and the default (`Appointment`) stands. |
+| `?type=` | `Easy Schedules`, `Hard Schedules`, `Diagnostic`, `Procedure`, `Referral`, `all` — or a comma-separated list. Shorthands: `easy`, `hard`, and `appointment`/`schedules` for both halves | Sets the opening Type filter. All three filters are multi-select, so `?type=Hard Schedules,Referral` opens with two Types included. `?type=appointment` predates the Easy/Hard split and still works — it selects both halves, so existing embeds are unchanged. A value this export doesn't contain is ignored and the default (both schedule types) stands. |
 | `?status=` | `Auth Approved`, `Auth Not Required`, `Auth Denied`, `Auth Blocked`, `all` — or a comma-separated list | Sets the opening Status filter; the default is `all`. Spaces in a status name need URL-encoding, which the browser does for you if you type the URL in the address bar. |
 | `?portal=` | Any portal in the export (`Aerial`, `IEHP`, `Medpoint`, …), `(Blank)`, `all` — or a comma-separated list | Sets the opening Portal filter; the default is `all`. Ignored on an export with no `Insurance Portal` column, where the filter doesn't exist. |
 
@@ -306,21 +346,23 @@ now drops anything dated past the export's own pull date and prints the count.
 Scoped to the current Type, Status, Portal, and date filters. "In the period" means
 **completed** in the period. Type is matched
 case-insensitively, because the export mixes `Appointment` with `DIAGNOSTIC`
-and `REFERRAL`. `RC Assigned` is tested with *contains* `svc-quickbase` against
+and `REFERRAL`; `Appointment` rows are then relabelled `Easy Schedules` or
+`Hard Schedules` before anything is counted, so the Type dimension the dashboard
+filters on is the post-split one. `RC Assigned` is tested with *contains* `svc-quickbase` against
 the raw value, before sanitization collapses it — so the metrics are unaffected
 by the redaction. (Confirmed: the headline figures are byte-identical with and
 without the sanitize stage.)
 
 | Metric | Definition |
 |---|---|
-| **Total Schedule Authorizations** | Count of authorizations **completed** in the period where `Type = Appointment`. |
+| **Total Schedule Authorizations** | Count of authorizations **completed** in the period whose `Type` is a scheduling type — i.e. `Easy Schedules` + `Hard Schedules`, which is the same row set the single `Appointment` type used to cover. Tick only one half and the KPI label changes to *Total Easy/Hard Schedule Authorizations*. |
 | **Touched by RPA** | **Distinct** rows where `RC Assigned` contains `svc-quickbase` **or** `Bot Run Fail Date` is populated. |
 | **Percent Touched by RPA** | Touched ÷ Total. |
 | **RPA Success Rate** | Rows where `RC Assigned` contains `svc-quickbase` ÷ Touched. |
 
 ### Three decisions worth knowing about
 
-**Overlapping rows are counted once.** 469 Appointment rows have *both* an
+**Overlapping rows are counted once.** 469 scheduling rows (Easy + Hard) have *both* an
 `svc-quickbase` assignment and a `Bot Run Fail Date`. Summing the two counts
 would double-count them, so "touched" uses the de-duplicated union. These rows
 are treated as **bot failed, then succeeded on retry** — they count as touched
@@ -363,8 +405,9 @@ populated. The exact window is always printed at the right of the filter row.
 ## Reading the dashboard
 
 - **Filters** sit in one row and scope everything below them. Presets are
-  **14 Days · 1M · 1Q · YTD · All**; the default is **YTD** with
-  `Type = Appointment`. `1M` and `1Q` are inclusive calendar months (a `1M`
+  **14 Days · 1M · 1Q · YTD · All**; the default is **YTD** with both scheduling
+  types ticked (`Easy Schedules` + `Hard Schedules`, i.e. the old
+  `Type = Appointment` slice). `1M` and `1Q` are inclusive calendar months (a `1M`
   window ending Oct 8 starts Sep 9), and `YTD` runs from Jan 1 of the latest
   year in the export. Anything past 70 days buckets by week, so the opening view
   is weekly rather than daily. **`YTD` and `All` currently show the same
@@ -403,7 +446,7 @@ populated. The exact window is always printed at the right of the filter row.
 - **Type, Status and Portal are multi-select.** Each one opens a panel of
   checkboxes — tick as many or as few values as you want, and every ticked value
   is included in every KPI and chart below. The button reports the selection
-  (`Appointment`, `Appointment, Referral`, `3 of 4 types`), and
+  (`Hard Schedules`, `Easy Schedules, Referral`, `3 of 5 types`), and
   **All types** / **All statuses** / **All portals** at the top of the panel
   ticks everything at once. Hovering a row reveals an **only** button, which
   isolates that one value in a single click — the fast path for "just Aerial",
@@ -412,6 +455,20 @@ populated. The exact window is always printed at the right of the filter row.
   page is printed. One value always stays ticked: unticking the last one is a
   no-op, since an empty selection would draw an empty dashboard that reads as a
   broken build rather than as a filter choice.
+- **`Easy Schedules` / `Hard Schedules` are the two halves of the old
+  `Appointment` type.** An Appointment is a **hard schedule** when its
+  `Encounter Provider` matches the roster in `providers.hard.txt`, and an **easy
+  schedule** otherwise. Both are ticked by default, and together they are exactly
+  the old `Appointment` total — 46,630 + 14,733 = 61,363 in the current export,
+  with every headline figure (30.81% touched, 73.06% success) unchanged by the
+  split. Untick one and the hero KPI renames itself to match, so a screenshot
+  can't misrepresent which half it's showing.
+
+  The two halves behave genuinely differently, which is the point of separating
+  them: **easy** schedules are 33.7% RPA-touched at a 74.5% success rate,
+  **hard** ones only 21.6% touched at 66.2%. On an export with no
+  `Encounter Provider` column, or with no roster file, the type stays a single
+  undivided `Appointment` and nothing else changes.
 - **`Portal`** is `Insurance Portal`, the payer portal the auth was worked in.
   It appears only on exports from **V1.07** on; on an older one the whole
   control is hidden rather than shown empty. `(Blank)` is a real answer, not

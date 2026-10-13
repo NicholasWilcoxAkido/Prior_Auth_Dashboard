@@ -367,6 +367,7 @@ td:first-child { color: var(--ink); }
     <ul>
       <li><strong>Every date is the date the authorization was completed</strong> (<code>Date Auth Completed Roll Up</code>), not the date it was requested. So this dashboard measures <strong>throughput</strong> &mdash; what finished in the window. A request that arrived in August and finished in September counts in September.</li>
       <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type, Status and Portal filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Easy Schedules / Hard Schedules</strong> &mdash; the two halves of what used to be the single <code>Appointment</code> type. A scheduling authorization is a <strong>hard schedule</strong> when its <code>Encounter Provider</code> is on a fixed roster of providers whose appointments are known to be difficult to schedule, and an <strong>easy schedule</strong> otherwise. Together they are exactly the old <code>Appointment</code> total &mdash; nothing is added or dropped, and both are selected by default. The roster itself is <em>not</em> published: provider names are treated as personal data, so the build converts each name to the single word <em>easy</em> or <em>hard</em> at ingest and discards it.</li>
       <li><strong>Portal</strong> &mdash; <code>Insurance Portal</code>, the payer portal the authorization was worked in. <code>(Blank)</code> is a real answer rather than missing data: it is mostly <code>Auth Not Required</code> work that never needed a portal, and it holds almost no RPA activity.</li>
       <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
       <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
@@ -390,8 +391,20 @@ var D = null;
    [] is the canonical "every value". Keeping all-means-empty rather than
    listing every value means a future export that adds a Type is included
    automatically instead of being silently filtered out by a stale list. */
-var S = { preset: "ytd", from: null, to: null, types: ["Appointment"], statuses: [], portals: [], tex: false };
+var S = { preset: "ytd", from: null, to: null, types: [], statuses: [], portals: [], tex: false };
 var TABLES = {};
+
+/* Every label a scheduling authorization can carry. From V1.08 the build splits
+   Appointment into Easy/Hard Schedules; "Appointment" stays in the list because
+   an export without the Encounter Provider column still emits it, and because
+   GitHub Pages serves a stale data.json for ~10 minutes after a push - during
+   that window this new page is reading the OLD dimensions, and the default slice
+   has to resolve to the same authorizations it always did rather than to nothing.
+   S.types is seeded from whichever of these the loaded data.json actually has. */
+var SCHED_TYPES = ["Easy Schedules", "Hard Schedules", "Appointment"];
+function schedTypes() {
+  return SCHED_TYPES.filter(function (v) { return D.types.indexOf(v) >= 0; });
+}
 
 var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
 
@@ -929,10 +942,20 @@ function renderKPIs(m, prev, rows, priorRange) {
   var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
   /* Type values arrive from the build already title-cased, so they can be used
      in a label verbatim. With several Types selected no single noun is honest,
-     so the generic one stands and the slice note above names them. */
+     so the generic one stands and the slice note above names them. The Easy/Hard
+     labels are plural ("Easy Schedules"), so they get singularized here rather
+     than reading "Easy Schedules Authorizations". */
   var tsel = effSel(S.types, D.types);
-  var noun = (tsel.length !== 1) ? "Authorizations"
-    : (tsel[0] === "Appointment" ? "Schedule Authorizations" : tsel[0] + " Authorizations");
+  var sched = schedTypes();
+  var isSched = sched.length > 0 && sched.length === tsel.length &&
+    sched.every(function (v) { return tsel.indexOf(v) >= 0; });
+  var noun;
+  if (isSched) noun = "Schedule Authorizations";
+  else if (tsel.length !== 1) noun = "Authorizations";
+  else if (tsel[0] === "Easy Schedules") noun = "Easy Schedule Authorizations";
+  else if (tsel[0] === "Hard Schedules") noun = "Hard Schedule Authorizations";
+  else if (tsel[0] === "Appointment") noun = "Schedule Authorizations";
+  else noun = tsel[0] + " Authorizations";
 
   /* Delta text stays short enough to sit on one line beside the sparkline; the
      comparison window is stated once below the KPI row. */
@@ -1613,17 +1636,33 @@ function boot(data) {
      multi-select. A single value still works, so existing embeds are unchanged.
      Returns null when the parameter names nothing this export has, so the
      default selection survives a typo instead of silently widening. */
-  function parseSel(raw, dim) {
+  function parseSel(raw, dim, alias) {
     if (!raw) return null;
     var parts = raw.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
     if (!parts.length) return null;
     if (parts.length === 1 && /^(all|__all)$/i.test(parts[0])) return [];
+    var want = [];
+    parts.forEach(function (p) {
+      var a = alias ? alias[p.toLowerCase()] : null;
+      if (a) { want = want.concat(a); } else { want.push(p); }
+    });
     var out = dim.filter(function (v) {
-      return parts.some(function (p) { return p.toLowerCase() === v.toLowerCase(); });
+      return want.some(function (p) { return p.toLowerCase() === v.toLowerCase(); });
     });
     return out.length ? out : null;
   }
-  var qt = parseSel(q.get("type"), D.types);
+  /* ?type=appointment predates the Easy/Hard split and is live in Notion embeds,
+     so it has to keep meaning "both halves" instead of matching no label and
+     silently falling back to the default. easy/hard are shorthands for one half. */
+  var TYPE_ALIAS = {
+    "appointment": SCHED_TYPES, "appointments": SCHED_TYPES,
+    "schedule": SCHED_TYPES, "schedules": SCHED_TYPES,
+    "easy": ["Easy Schedules"], "hard": ["Hard Schedules"]
+  };
+  /* Seeded before the query string is read, so ?type= overrides it and an absent
+     or unrecognized ?type= leaves the scheduling default in place. */
+  S.types = schedTypes();
+  var qt = parseSel(q.get("type"), D.types, TYPE_ALIAS);
   if (qt) S.types = qt;
   var qs = parseSel(q.get("status"), D.statuses);
   if (qs) S.statuses = qs;

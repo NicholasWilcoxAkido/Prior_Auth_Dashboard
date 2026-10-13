@@ -98,10 +98,14 @@ $COL_FREASON= 'Bot Run Fail Reason'
 # Arrived in V1.07. OPTIONAL on purpose: an export that predates it still has to
 # build, so this column is read when present and skipped when not.
 $COL_PORTAL = 'Insurance Portal'
-# V1.07 also carries 'Encounter Provider'. It is deliberately NOT read anywhere
-# in this script: provider names are a fresh PPI surface with no metric asking
-# for them yet, and the cheapest way to keep them out of a published file is to
-# never load them in the first place.
+# Also arrived in V1.07, also optional. This column holds provider NAMES - the
+# same class of PPI as the coordinator names in RC Assigned - so it is read for
+# exactly one purpose: deciding whether an Appointment row is a hard or an easy
+# schedule. The name is converted to that one word during the sanitize stage and
+# the original is overwritten in place, so nothing downstream of ingest can see
+# it, let alone publish it. The roster that drives the decision lives in a
+# gitignored file (see $HARD_ROSTER) rather than in this script, which is public.
+$COL_PROVIDER = 'Encounter Provider'
 
 # Every date on the dashboard buckets on THIS column. It is the completion date,
 # so the dashboard reports throughput (what got finished in a period), not intake
@@ -122,6 +126,65 @@ if ($missing.Count) {
 $hasPortal = $COL_PORTAL -in $present
 Write-Host ("Insurance Portal: {0}" -f $(if ($hasPortal) { 'present' } else { "absent - PORTAL filter will be hidden" }))
 
+# ---------------------------------------------------------------- hard roster
+# The list of providers whose appointments count as "hard" to schedule. Kept in
+# a gitignored sidecar file, NOT in this script: the patterns are provider names
+# and this script is published. Missing or empty file degrades to the V1.07
+# behaviour - one undivided 'Appointment' type - rather than failing the build,
+# so a fresh clone of the public repo still produces a working dashboard.
+$HARD_ROSTER = Join-Path $root 'providers.hard.txt'
+
+# Hyphens become spaces and runs of whitespace collapse on BOTH sides of the
+# comparison, so one roster entry covers both the hyphenated and the spaced
+# spelling of a double-barrelled surname without needing two rules.
+#
+# (Writing the real pair out here as an example is what the repo gate below
+# exists to stop, and it duly caught the first draft of this comment.)
+function Normalize-ProviderText {
+    param([string] $Value)
+    return ((("$Value") -replace '-', ' ') -replace '\s+', ' ').Trim()
+}
+
+# Type arrives with inconsistent casing (Appointment / DIAGNOSTIC / REFERRAL / Procedure).
+# Defined here rather than with the other normalizers because the sanitize stage
+# below needs it to recognize Appointment rows.
+function Normalize-Type {
+    param([string] $Value)
+    $v = ("$Value").Trim()
+    if (-not $v) { return '(Blank)' }
+    switch -Regex ($v) {
+        '^appointment$' { return 'Appointment' }
+        '^diagnostic$'  { return 'Diagnostic' }
+        '^referral$'    { return 'Referral' }
+        '^procedure$'   { return 'Procedure' }
+        default         { return [cultureinfo]::InvariantCulture.TextInfo.ToTitleCase($v.ToLower()) }
+    }
+}
+
+$hardPatterns = @()
+if (Test-Path -LiteralPath $HARD_ROSTER) {
+    $hardPatterns = @(Get-Content -LiteralPath $HARD_ROSTER |
+        ForEach-Object { ($_ -split '#')[0] } |
+        ForEach-Object { Normalize-ProviderText -Value $_ } |
+        Where-Object { $_ } |
+        Select-Object -Unique)
+}
+$hasProvider = $COL_PROVIDER -in $present
+$canSplit    = $hasProvider -and $hardPatterns.Count -gt 0
+
+# Deliberately prints the COUNT and never the patterns. This output gets pasted
+# into README.md and into chat, and a roster of provider names is precisely what
+# this design keeps out of both.
+if ($canSplit) {
+    Write-Host ("Encounter Provider: present - splitting Appointment on {0} roster pattern(s)" -f $hardPatterns.Count)
+} elseif (-not $hasProvider) {
+    Write-Host "Encounter Provider: absent - Appointment stays undivided" -ForegroundColor Yellow
+} elseif (-not (Test-Path -LiteralPath $HARD_ROSTER)) {
+    Write-Host ("Encounter Provider: present, but {0} is missing - Appointment stays undivided" -f (Split-Path -Leaf $HARD_ROSTER)) -ForegroundColor Yellow
+} else {
+    Write-Host ("Encounter Provider: present, but {0} lists no patterns - Appointment stays undivided" -f (Split-Path -Leaf $HARD_ROSTER)) -ForegroundColor Yellow
+}
+
 # ================================================================ SANITIZE
 # Everything below this block only ever sees scrubbed values. PPI is destroyed
 # here, at ingest, rather than filtered out later.
@@ -129,6 +192,11 @@ Write-Host ("Insurance Portal: {0}" -f $(if ($hasPortal) { 'present' } else { "a
 #   RC Assigned          -> 'svc-quickbase' | '(human)' | '(unassigned)'
 #                           Coordinator names and user IDs are discarded; only
 #                           the bot-or-not distinction is needed downstream.
+#   Encounter Provider   -> 'Easy' | 'Hard' | '(n/a)'
+#                           Provider names are discarded the same way; only the
+#                           hard-roster verdict survives, and only on Appointment
+#                           rows. '(n/a)' is every other Type, where the split
+#                           has no meaning.
 #   Bot Run Fail Reason  -> names and identifiers replaced with [name] / [id] / [date]
 
 # Coordinator names are harvested from the file itself, so the redaction list
@@ -189,11 +257,43 @@ $sanBot = 0; $sanHuman = 0; $sanBlank = 0; $sanReasons = 0
 # quotes one.
 $exportIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
+# Same idea for provider names: captured here, before the column is overwritten,
+# so the gates below can prove no published file quotes one. Full display values
+# only - NOT split into word parts the way coordinator names are. Provider values
+# include practice-style names whose individual words ('Health', 'Family') occur
+# in ordinary README prose, and a gate that cries wolf gets switched off.
+$providerValues = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+# Per-pattern row counts, so the operator can confirm each roster entry hits the
+# provider it was meant to hit. Counts only - the patterns are never printed.
+$patternHits = @{}
+foreach ($p in $hardPatterns) { $patternHits[$p] = 0 }
+$sanEasy = 0; $sanHard = 0; $sanNa = 0
+
 foreach ($r in $rows) {
     $rc = "$($r.$COL_RC)"
     if ($rc -imatch 'svc-quickbase')           { $r.$COL_RC = 'svc-quickbase'; $sanBot++ }
     elseif ([string]::IsNullOrWhiteSpace($rc)) { $r.$COL_RC = '(unassigned)';  $sanBlank++ }
     else                                       { $r.$COL_RC = '(human)';       $sanHuman++ }
+
+    # --- Encounter Provider -> Easy/Hard verdict, name destroyed in place.
+    # The verdict is only computed for Appointment rows; the split is defined
+    # as a subdivision of that Type and means nothing for Diagnostic/Referral.
+    if ($hasProvider) {
+        $prov = Normalize-ProviderText -Value "$($r.$COL_PROVIDER)"
+        if ($prov) { [void]$providerValues.Add($prov) }
+        if ($canSplit -and (Normalize-Type -Value "$($r.$COL_TYPE)") -eq 'Appointment') {
+            $verdict = 'Easy'
+            foreach ($p in $hardPatterns) {
+                if ($prov -imatch [regex]::Escape($p)) { $verdict = 'Hard'; $patternHits[$p]++ }
+            }
+            if ($verdict -eq 'Hard') { $sanHard++ } else { $sanEasy++ }
+            $r.$COL_PROVIDER = $verdict
+        } else {
+            $sanNa++
+            $r.$COL_PROVIDER = '(n/a)'
+        }
+    }
 
     $raw = "$($r.$COL_FREASON)"
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
@@ -209,6 +309,22 @@ foreach ($r in $rows) {
 Write-Host ("Sanitized: RC Assigned -> {0} bot / {1} human / {2} unassigned ({3} coordinator names discarded)" -f `
     $sanBot, $sanHuman, $sanBlank, $personNames.Count) -ForegroundColor DarkGray
 Write-Host ("Sanitized: {0} fail reasons had names/identifiers redacted" -f $sanReasons) -ForegroundColor DarkGray
+if ($hasProvider) {
+    Write-Host ("Sanitized: Encounter Provider -> {0} hard / {1} easy / {2} n-a ({3} provider names discarded)" -f `
+        $sanHard, $sanEasy, $sanNa, $providerValues.Count) -ForegroundColor DarkGray
+    if ($canSplit) {
+        # Pattern index, not the pattern. Line up with providers.hard.txt to read it.
+        $i = 0
+        foreach ($p in $hardPatterns) {
+            $i++
+            if ($patternHits[$p] -eq 0) {
+                Write-Host ("  roster pattern #{0}: 0 rows - stale entry, or the name is spelled differently in this export" -f $i) -ForegroundColor Yellow
+            } else {
+                Write-Host ("  roster pattern #{0}: {1:N0} rows" -f $i, $patternHits[$p]) -ForegroundColor DarkGray
+            }
+        }
+    }
+}
 
 # A row-level copy with PPI removed. The original export is never modified -
 # this is written alongside it so you can verify the scrub and, if you prefer,
@@ -217,9 +333,14 @@ if (-not $SkipSanitizedCsv) {
     $sanDir = Join-Path $root 'sanitized'
     if (-not (Test-Path $sanDir)) { New-Item -ItemType Directory -Force -Path $sanDir | Out-Null }
     $sanPath = Join-Path $sanDir ([IO.Path]::GetFileNameWithoutExtension($Source) + '.sanitized.csv')
-    # Insurance Portal joins the list; Encounter Provider does not (see above).
+    # Insurance Portal joins the list as-is. Encounter Provider joins it only
+    # under a renamed header: the column no longer holds a provider by this
+    # point, it holds the Easy/Hard verdict, and a column labelled 'Encounter
+    # Provider' containing the word 'Hard' invites someone to re-join it to a
+    # name later.
     $sanCols = @($COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON)
     if ($hasPortal) { $sanCols += $COL_PORTAL }
+    if ($hasProvider) { $sanCols += @{ Name = 'Schedule Class'; Expression = { $_.$COL_PROVIDER } } }
     $rows |
         Select-Object $sanCols |
         Export-Csv -LiteralPath $sanPath -NoTypeInformation -Encoding utf8
@@ -227,18 +348,25 @@ if (-not $SkipSanitizedCsv) {
 }
 
 # ---------------------------------------------------------------- normalizers
+# Normalize-Type lives further up, above the sanitize stage: the Easy/Hard split
+# has to ask "is this an Appointment?" while the provider name is still readable,
+# and PowerShell needs the function defined before that point. One definition,
+# used by both stages, so the casing rules cannot drift apart.
 
-# Type arrives with inconsistent casing (Appointment / DIAGNOSTIC / REFERRAL / Procedure).
-function Normalize-Type {
-    param([string] $Value)
-    $v = ("$Value").Trim()
-    if (-not $v) { return '(Blank)' }
-    switch -Regex ($v) {
-        '^appointment$' { return 'Appointment' }
-        '^diagnostic$'  { return 'Diagnostic' }
-        '^referral$'    { return 'Referral' }
-        '^procedure$'   { return 'Procedure' }
-        default         { return [cultureinfo]::InvariantCulture.TextInfo.ToTitleCase($v.ToLower()) }
+# The Type dimension as the dashboard publishes it. 'Appointment' subdivides into
+# 'Easy Schedules' / 'Hard Schedules' using the verdict the sanitize stage left
+# behind; every other Type passes through untouched. Both output labels are fixed
+# literals, so no provider name can reach the published dimension even if the
+# roster or the export changes shape. With no roster the verdict is '(n/a)' and
+# this collapses back to plain 'Appointment'.
+function Resolve-Type {
+    param([string] $Type, [string] $Class)
+    $t = Normalize-Type -Value $Type
+    if ($t -ne 'Appointment') { return $t }
+    switch ($Class) {
+        'Hard'  { return 'Hard Schedules' }
+        'Easy'  { return 'Easy Schedules' }
+        default { return 'Appointment' }
     }
 }
 
@@ -405,7 +533,7 @@ foreach ($r in $rows) {
     }
 
     $di = Get-Index $dateIdx   $dKey
-    $ti = Get-Index $typeIdx   (Normalize-Type   -Value "$($r.$COL_TYPE)")
+    $ti = Get-Index $typeIdx   (Resolve-Type -Type "$($r.$COL_TYPE)" -Class $(if ($hasProvider) { "$($r.$COL_PROVIDER)" } else { '' }))
     $si = Get-Index $statusIdx (Normalize-Status -Value "$($r.$COL_STATUS)")
     $ri = if ($reason) { Get-Index $reasonIdx $reason } else { -1 }
     $pi = if ($hasPortal) { Get-Index $portalIdx (Normalize-Portal -Value "$($r.$COL_PORTAL)") } else { -1 }
@@ -436,7 +564,10 @@ function Get-OrderedKeys {
         if ($i -ge 0) { $i } else { $Preferred.Count }
     }}, @{ Expression = { $_ } })
 }
-$typeOrder   = Get-OrderedKeys $typeIdx   @('Appointment', 'Diagnostic', 'Procedure', 'Referral')
+# 'Appointment' stays in the preferred order even though the split replaces it:
+# an export without the provider column still produces it, and it has to sort
+# where it always did rather than falling to the bottom with the strays.
+$typeOrder   = Get-OrderedKeys $typeIdx   @('Easy Schedules', 'Hard Schedules', 'Appointment', 'Diagnostic', 'Procedure', 'Referral')
 $statusOrder = Get-OrderedKeys $statusIdx @('Auth Approved', 'Auth Not Required', 'Auth Denied', 'Auth Blocked')
 
 # Portals get no hand-written preferred list: the roster is the payer's to
@@ -539,6 +670,18 @@ foreach ($n in $personNames) {
         if ($label -imatch ('\b' + [regex]::Escape($n) + '\b')) { $leaks += "coordinator name '$n' in '$label'" }
     }
 }
+# Provider names likewise. Resolve-Type is built to emit fixed literals, so this
+# can only fire if someone rewires it to pass a provider value through - which is
+# exactly the mistake worth catching, since the Type dimension is published and
+# the whole point of the Easy/Hard split is that the roster stays private.
+foreach ($pv in $providerValues) {
+    if ($pv.Length -lt 4) { continue }
+    foreach ($label in (@($typeOrder) + @($statusOrder) + @($portalOrder) + @($reasonIdx.Keys))) {
+        if ((Normalize-ProviderText -Value $label) -imatch [regex]::Escape($pv)) {
+            $leaks += "provider name in published label '$label'"
+        }
+    }
+}
 if ($leaks.Count) {
     Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
     Write-Host ""
@@ -582,6 +725,19 @@ foreach ($f in $repoFiles) {
         if ($exportIds.Contains($tok)) { $repoLeaks += "${name}: export identifier '$tok'" }
         elseif ($nameParts.Contains($tok)) { $repoLeaks += "${name}: coordinator name '$tok'" }
     }
+    # Provider names and roster patterns, matched as whole values against the
+    # normalized text rather than token-by-token. Documenting the Easy/Hard split
+    # is the obvious moment to paste in "the providers are X, Y, Z" as an example,
+    # and that one sentence would publish the roster this design keeps private.
+    $flat = Normalize-ProviderText -Value $txt
+    foreach ($pv in $providerValues) {
+        if ($pv.Length -lt 6) { continue }
+        if ($flat -imatch ('\b' + [regex]::Escape($pv) + '\b')) { $repoLeaks += "${name}: provider name from the export" }
+    }
+    foreach ($p in $hardPatterns) {
+        if ($p.Length -lt 4) { continue }
+        if ($flat -imatch ('\b' + [regex]::Escape($p) + '\b')) { $repoLeaks += "${name}: hard-schedule roster pattern" }
+    }
 }
 if ($repoLeaks.Count) {
     Write-Host ""
@@ -589,27 +745,51 @@ if ($repoLeaks.Count) {
     $repoLeaks | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     throw "Replace the value(s) above with a described shape (e.g. '<11-digit number>'), then re-run. Never paste raw error text into a published file."
 }
-Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms." -f $repoFiles.Count, $exportIds.Count, $nameParts.Count) -ForegroundColor DarkGray
+Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms / {3} provider names." -f `
+    $repoFiles.Count, $exportIds.Count, $nameParts.Count, $providerValues.Count) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------- console summary
-$apptIdx = [array]::IndexOf($typeOrder, 'Appointment')
-$tot = 0; $ok = 0; $retry = 0; $fail = 0
-foreach ($f in $facts) {
-    if ($f[1] -ne $apptIdx) { continue }
-    $tot += $f[5]
-    switch ($f[3]) { 0 { $ok += $f[5] } 1 { $retry += $f[5] } 2 { $fail += $f[5] } }
+# "Schedule auths" spans every label the Appointment type can appear under, so
+# this total is comparable across builds whether or not the roster split it.
+function Measure-Types {
+    param([string[]] $Labels)
+    $idx = @($Labels | ForEach-Object { [array]::IndexOf($typeOrder, $_) } | Where-Object { $_ -ge 0 })
+    $m = [ordered]@{ total = 0; ok = 0; retry = 0; fail = 0 }
+    if (-not $idx.Count) { return $m }
+    foreach ($f in $facts) {
+        if ($idx -notcontains $f[1]) { continue }
+        $m.total += $f[5]
+        switch ($f[3]) { 0 { $m.ok += $f[5] } 1 { $m.retry += $f[5] } 2 { $m.fail += $f[5] } }
+    }
+    return $m
 }
-$touched = $ok + $retry + $fail
-$success = $ok + $retry
+
+$SCHED_TYPES = @('Easy Schedules', 'Hard Schedules', 'Appointment')
+$m = Measure-Types -Labels $SCHED_TYPES
+$touched = $m.ok + $m.retry + $m.fail
+$success = $m.ok + $m.retry
 
 Write-Host ""
-Write-Host "=== Schedule Auth Metrics (all dates, Type = Appointment) ===" -ForegroundColor Cyan
-Write-Host ("  Total Schedule Auths            : {0:N0}" -f $tot)
+Write-Host ("=== Schedule Auth Metrics (all dates, {0}) ===" -f $(if ($canSplit) { 'Easy + Hard Schedules' } else { 'Type = Appointment' })) -ForegroundColor Cyan
+Write-Host ("  Total Schedule Auths            : {0:N0}" -f $m.total)
 Write-Host ("  Touched by RPA                  : {0:N0}" -f $touched)
-Write-Host ("  Percent Touched by RPA          : {0:N2}%" -f (100 * $touched / [math]::Max($tot, 1)))
+Write-Host ("  Percent Touched by RPA          : {0:N2}%" -f (100 * $touched / [math]::Max($m.total, 1)))
 Write-Host ("  RPA Success Rate                : {0:N2}%" -f (100 * $success / [math]::Max($touched, 1)))
-Write-Host ("    bot success            : {0:N0}" -f $ok)
-Write-Host ("    bot success after retry: {0:N0}" -f $retry)
-Write-Host ("    bot failed             : {0:N0}" -f $fail)
+Write-Host ("    bot success            : {0:N0}" -f $m.ok)
+Write-Host ("    bot success after retry: {0:N0}" -f $m.retry)
+Write-Host ("    bot failed             : {0:N0}" -f $m.fail)
+
+# The split is only worth having if the two halves behave differently, so print
+# them side by side - this is the line that tells you whether "hard" is real.
+if ($canSplit) {
+    Write-Host ""
+    Write-Host "  --- split ---" -ForegroundColor Cyan
+    foreach ($lbl in @('Easy Schedules', 'Hard Schedules')) {
+        $s = Measure-Types -Labels @($lbl)
+        $st = $s.ok + $s.retry + $s.fail
+        Write-Host ("  {0,-15}: {1,7:N0} auths | {2,6:N0} touched ({3,5:N2}%) | success {4,5:N2}%" -f `
+            $lbl, $s.total, $st, (100 * $st / [math]::Max($s.total, 1)), (100 * ($s.ok + $s.retry) / [math]::Max($st, 1)))
+    }
+}
 Write-Host ""
 Write-Host ("Wrote {0} ({1:N1} KB)" -f $OutFile, ((Get-Item $OutFile).Length / 1KB)) -ForegroundColor Green
