@@ -67,6 +67,13 @@
 }
 
 * { box-sizing: border-box; }
+/* The `hidden` attribute has to win here. Its display:none comes from the user
+   agent stylesheet, and ANY author rule setting display beats a UA rule
+   regardless of specificity - so `.fgroup { display: flex }` would quietly
+   un-hide <div class="fgroup" hidden>, which is how the Portal and Provider
+   groups are meant to disappear on an export that lacks those columns. Same
+   applies to the rows the provider search hides. */
+[hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -131,12 +138,35 @@ select, input[type="date"] {
 .mspanel {
   display: none; position: absolute; z-index: 60; top: calc(100% + 4px); left: 0;
   /* Tall enough that the 11-portal roster fits without scrolling, still bounded
-     so a future longer list cannot run off the bottom of the viewport. */
-  min-width: 100%; max-height: 350px; overflow: auto; padding: 5px;
+     so a future longer list cannot run off the bottom of the viewport. The
+     ~90-name provider roster does scroll, which is what the search box is for. */
+  /* Sized to the longest label rather than to the button. An absolutely
+     positioned box shrink-to-fits within its containing block, which here is the
+     button - so provider names, being far longer than any Type or Portal value,
+     overflowed into a horizontal scrollbar. max-content opts out of that cap;
+     the max-width keeps a long future label from running off a narrow viewport.
+     scrollbar-gutter reserves the vertical scrollbar's width up front, otherwise
+     it eats into the content box and brings the horizontal bar straight back. */
+  min-width: 100%; width: max-content; max-width: min(360px, 70vw);
+  max-height: 350px; overflow: auto; scrollbar-gutter: stable; padding: 5px;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.16);
 }
 .ms.open .mspanel { display: block; }
+/* Type-to-narrow, added only to a long list (see MS_SEARCH_MIN). Sticky because
+   the panel scrolls: on a 90-entry roster a search box that scrolls away is
+   worse than none, since you cannot see what you typed while reading results.
+   Right-hand padding clears the native clear button in Edge/Safari. */
+.mssearch {
+  position: sticky; top: 0; z-index: 1; margin: -5px -5px 4px; padding: 7px 8px 6px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border);
+}
+.mssearch input {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px;
+  padding: 4px 24px 4px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--page); color: var(--ink);
+}
+.msnohit { font-size: 12px; color: var(--muted); padding: 6px 8px; }
 .msopt {
   display: flex; align-items: center; gap: 7px; cursor: pointer;
   font-size: 12.5px; color: var(--ink); white-space: nowrap;
@@ -350,6 +380,15 @@ td:first-child { color: var(--ink); }
         <div class="mspanel" id="fportalPanel" role="group" aria-label="Insurance portals to include"></div>
       </div>
     </div>
+    <!-- Encounter Provider. Hidden on any data.json built before V1.09, which
+         publishes no providers list at all. -->
+    <div class="fgroup" id="providerGroup" hidden>
+      <span class="flabel">Provider</span>
+      <div class="ms" id="msProvider">
+        <button class="msbtn" id="fproviderBtn" type="button" aria-expanded="false" aria-controls="fproviderPanel" aria-label="Filter by encounter provider"></button>
+        <div class="mspanel" id="fproviderPanel" role="group" aria-label="Encounter providers to include"></div>
+      </div>
+    </div>
     <div class="spacer" style="flex:1 1 auto"></div>
     <span class="range-note" id="rangeEcho"></span>
   </div>
@@ -419,9 +458,11 @@ td:first-child { color: var(--ink); }
     <h3>How These Numbers Are Defined</h3>
     <ul>
       <li><strong>Every date is the date the authorization was completed</strong> (<code>Date Auth Completed Roll Up</code>), not the date it was requested. So this dashboard measures <strong>throughput</strong> &mdash; what finished in the window. A request that arrived in August and finished in September counts in September.</li>
-      <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type, Status and Portal filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
-      <li><strong>Easy Schedules / Hard Schedules</strong> &mdash; the two halves of what used to be the single <code>Appointment</code> type. A scheduling authorization is a <strong>hard schedule</strong> when its <code>Encounter Provider</code> is on a fixed roster of providers whose appointments are known to be difficult to schedule, and an <strong>easy schedule</strong> otherwise. Together they are exactly the old <code>Appointment</code> total &mdash; nothing is added or dropped, and both are selected by default. The roster itself is <em>not</em> published: provider names are treated as personal data, so the build converts each name to the single word <em>easy</em> or <em>hard</em> at ingest and discards it.</li>
+      <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type, Status, Portal and Provider filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
+      <li><strong>Easy Schedules / Hard Schedules</strong> &mdash; the two halves of what used to be the single <code>Appointment</code> type. A scheduling authorization is a <strong>hard schedule</strong> when its <code>Encounter Provider</code> is on a fixed roster of providers whose appointments are known to be difficult to schedule, and an <strong>easy schedule</strong> otherwise. Together they are exactly the old <code>Appointment</code> total &mdash; nothing is added or dropped, and both are selected by default. The roster is not written down anywhere on this page, but it can be read off the Provider filter: pick one provider and see which half its appointments fall into.</li>
       <li><strong>Portal</strong> &mdash; <code>Insurance Portal</code>, the payer portal the authorization was worked in. <code>(Blank)</code> is a real answer rather than missing data: it is mostly <code>Auth Not Required</code> work that never needed a portal, and it holds almost no RPA activity.</li>
+      <li><strong>Provider</strong> &mdash; <code>Encounter Provider</code>, the provider on the encounter, scoping every figure on the page. <code>(Blank)</code> is again a real answer and roughly a quarter of all rows: those authorizations carry no encounter provider, which is why the filter opens with it included. Unlike every other filter here these are people's names, so treat the page accordingly &mdash; it is restricted for that reason among others.</li>
+      <li><strong>N/A</strong> appears wherever a filter has <em>no</em> values ticked. That is a filter state, not a measurement: nothing has been asked about, so nothing is reported. A genuine zero &mdash; a window or a slice that really holds no authorizations &mdash; still shows as <code>0</code>.</li>
       <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
       <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
       <li><strong>Date Presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
@@ -440,11 +481,22 @@ td:first-child { color: var(--ink); }
 
 /* ====================================================================== state */
 var D = null;
-/* types / statuses are MULTI-select: an array of the values to include, where
-   [] is the canonical "every value". Keeping all-means-empty rather than
-   listing every value means a future export that adds a Type is included
-   automatically instead of being silently filtered out by a stale list. */
-var S = { preset: "ytd", from: null, to: null, types: [], statuses: [], portals: [], tex: false };
+/* Every dimension filter is MULTI-select and holds one of THREE things:
+
+     []            every value - the canonical "all"
+     ["a", "b"]    just those values
+     null          nothing at all
+
+   all-means-empty rather than a literal list of every value means a future
+   export that adds a Type is included automatically instead of being silently
+   filtered out by a stale selection.
+
+   null is the V1.09 addition. Unticking the last box used to be a no-op, on the
+   grounds that an empty dashboard is indistinguishable from a failed build; the
+   N/A state added below is what makes the difference legible, so the state is
+   now reachable. It is deliberately a distinct value from [] and not just an
+   empty array, because [] already means the exact opposite. */
+var S = { preset: "ytd", from: null, to: null, types: [], statuses: [], portals: [], providers: [], tex: false };
 var TABLES = {};
 
 /* Every label a scheduling authorization can carry. From V1.08 the build splits
@@ -584,10 +636,42 @@ function priorWindow(from, to) {
    pinned to a Type that no longer appears - widens to everything rather than
    emptying the dashboard, because a blank page reads as a broken build. */
 function effSel(sel, dim) {
-  if (!sel || !sel.length) return dim.slice();
+  /* Tested before the falsy check below, because null and [] are both falsy
+     here and mean opposite things. */
+  if (sel === null) return [];
+  if (!sel.length) return dim.slice();
   var out = dim.filter(function (v) { return sel.indexOf(v) >= 0; });
   return out.length ? out : dim.slice();
 }
+
+/* The dimensions with nothing ticked, by display name.
+
+   This is NOT the same condition as "the current slice happens to contain no
+   rows", and the difference is the whole point: zero rows is a statement about
+   the data, nothing selected is a statement about the filter. The first is
+   reported as 0, the second as N/A. Reporting an unticked filter as 0 would
+   read as "there were no authorizations", which is a false claim. */
+function emptyDims() {
+  var out = [];
+  if (S.types === null) out.push("Type");
+  if (S.statuses === null) out.push("Status");
+  if (D.portals.length && S.portals === null) out.push("Portal");
+  if (D.providers.length && S.providers === null) out.push("Provider");
+  return out;
+}
+
+/* The one sentence every blank surface shows, so the charts, the tables and the
+   KPI note cannot explain the same state three different ways. */
+function emptyMsg() {
+  var e = emptyDims();
+  if (!e.length) return null;
+  var which = e.length === 1 ? e[0] + " has" : e.join(" and ") + " have";
+  return which + " no values selected, so there is nothing to count. Tick a value, or use All.";
+}
+
+/* What an empty chart or table says. Falls back to the ordinary range wording
+   when the filters are fine and the window is simply empty. */
+function noDataMsg() { return emptyMsg() || "No data in the selected range."; }
 
 /* null = this dimension places no constraint, so the row loop can skip the test. */
 function selMask(sel, dim) {
@@ -602,7 +686,9 @@ function selMask(sel, dim) {
    are named outright; past that the count carries it and the full list goes in
    the button's title. */
 function selLabel(sel, dim, allLabel, noun) {
+  if (!dim.length) return allLabel;
   var eff = effSel(sel, dim);
+  if (!eff.length) return "None";
   if (eff.length >= dim.length) return allLabel;
   if (eff.length <= 2) return eff.join(", ");
   return eff.length + " of " + dim.length + " " + noun;
@@ -610,17 +696,20 @@ function selLabel(sel, dim, allLabel, noun) {
 
 /* Fact filter. ignore lets the type/status mix charts opt out of their own dimension.
 
-   Fact tuple: [date, type, status, bucket, reason, count, portal]. The portal
-   index sits AFTER the count because it was added later and GitHub Pages serves
-   a stale data.json for minutes after a push - see the matching comment in
-   Build-Dashboard.ps1. An export with no portal column publishes an empty
-   D.portals, which is also what an old data.json looks like here, and that one
-   condition both hides the filter and skips the test below. */
+   Fact tuple: [date, type, status, bucket, reason, count, portal, provider].
+   Portal and provider sit AFTER the count because they were added later, one
+   version apart, and GitHub Pages serves a stale data.json for minutes after a
+   push - see the matching comment in Build-Dashboard.ps1. An export without
+   either column publishes an empty D.portals / D.providers, which is also what
+   an older data.json looks like here, and that one condition both hides the
+   filter and skips the test below - so a stale pairing renders the previous
+   dashboard rather than reading an undefined index. */
 function facts(from, to, ignore) {
   ignore = ignore || {};
   var tm = ignore.type ? null : selMask(S.types, D.types);
   var sm = ignore.status ? null : selMask(S.statuses, D.statuses);
   var pm = (ignore.portal || !D.portals.length) ? null : selMask(S.portals, D.portals);
+  var vm = (ignore.provider || !D.providers.length) ? null : selMask(S.providers, D.providers);
   var out = [];
   for (var i = 0; i < D.facts.length; i++) {
     var f = D.facts[i];
@@ -629,6 +718,7 @@ function facts(from, to, ignore) {
     if (tm && !tm[f[1]]) continue;
     if (sm && !sm[f[2]]) continue;
     if (pm && !pm[f[6]]) continue;
+    if (vm && !vm[f[7]]) continue;
     out.push(f);
   }
   return out;
@@ -889,7 +979,10 @@ function legend(node, items) {
 /* ====================================================================== table view */
 function renderTable(node, cols, rows) {
   clear(node);
-  if (!rows.length) { var p = document.createElement("div"); p.className = "empty"; p.textContent = "No data in range."; node.appendChild(p); return; }
+  /* The table is the chart's accessible twin, so it has to give the same reason
+     for being blank - a screen-reader user should not be told "no data" when the
+     actual cause is an unticked filter. */
+  if (!rows.length) { var p = document.createElement("div"); p.className = "empty"; p.textContent = noDataMsg(); node.appendChild(p); return; }
   var t = document.createElement("table");
   var thead = document.createElement("thead"), tr = document.createElement("tr");
   cols.forEach(function (c) { var th = document.createElement("th"); th.textContent = c; th.scope = "col"; tr.appendChild(th); });
@@ -908,11 +1001,29 @@ function renderTable(node, cols, rows) {
   t.appendChild(tb); node.appendChild(t);
 }
 
+/* Wraps, because SVG text does not. The unticked-filter message is a full
+   sentence and a single <text> would run straight off both sides of the
+   viewBox - which, on the surface that exists to explain why the chart is
+   blank, is the worst possible place for a clipped explanation. */
 function emptyChart(svg, msg) {
   clear(svg);
-  svg.setAttribute("viewBox", "0 0 600 120");
-  var t = sv("text", { x: 300, y: 64, "text-anchor": "middle", fill: cssVar("--muted"), "font-size": 13 }, msg);
-  svg.appendChild(t);
+  var W = 600, size = 13, lh = 18, maxW = W - 90;
+  var lines = [], cur = "";
+  String(msg).split(" ").forEach(function (w) {
+    var t = cur ? cur + " " + w : w;
+    if (cur && textWidth(t, size) > maxW) { lines.push(cur); cur = w; } else { cur = t; }
+  });
+  if (cur) lines.push(cur);
+
+  var H = Math.max(120, lines.length * lh + 58);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  var y0 = H / 2 - ((lines.length - 1) * lh) / 2 + 4;
+  lines.forEach(function (ln, i) {
+    svg.appendChild(sv("text", {
+      x: W / 2, y: y0 + i * lh, "text-anchor": "middle",
+      fill: cssVar("--muted"), "font-size": size
+    }, ln));
+  });
 }
 
 /* ====================================================================== KPI tiles */
@@ -983,15 +1094,26 @@ function tile(spec) {
 function renderKPIs(m, prev, rows, priorRange) {
   var host = $("kpis");
   clear(host);
+
+  /* With a dimension unticked there is no denominator to divide by and no
+     numerator to report, so every tile reads N/A and the deltas, sub-counts and
+     sparklines come off with it. A 0 here would be a measurement; N/A is the
+     honest answer to "you have asked about no authorizations". */
+  var blank = emptyDims().length > 0;
+
   /* The slice is spelled out here as well as in the filter row because the
      filter row is hidden in print, and a printed KPI with several Types folded
      into it is unreadable without knowing which ones. */
-  $("kpinote").textContent = (priorRange
-    ? "▲▼ compares against the preceding period of equal length (" + longDate(priorRange[0]) + " – " + longDate(priorRange[1]) + ")."
-    : "No earlier period of equal length exists in the export, so deltas are not shown.")
-    + " Type: " + selLabel(S.types, D.types, "all", "types")
+  var slice = " Type: " + selLabel(S.types, D.types, "all", "types")
     + " · Status: " + selLabel(S.statuses, D.statuses, "all", "statuses")
-    + (D.portals.length ? " · Portal: " + selLabel(S.portals, D.portals, "all", "portals") : "") + ".";
+    + (D.portals.length ? " · Portal: " + selLabel(S.portals, D.portals, "all", "portals") : "")
+    + (D.providers.length ? " · Provider: " + selLabel(S.providers, D.providers, "all", "providers") : "") + ".";
+  $("kpinote").textContent = blank
+    ? emptyMsg() + slice
+    : (priorRange
+        ? "▲▼ compares against the preceding period of equal length (" + longDate(priorRange[0]) + " – " + longDate(priorRange[1]) + ")."
+        : "No earlier period of equal length exists in the export, so deltas are not shown.")
+      + slice;
   var c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
   /* Type values arrive from the build already title-cased, so they can be used
      in a label verbatim. With several Types selected no single noun is honest,
@@ -1023,39 +1145,51 @@ function renderKPIs(m, prev, rows, priorRange) {
     return { text: (ch >= 0 ? "+" : "−") + Math.abs(ch).toFixed(1) + " pp", dir: ch > 0.05 ? 1 : ch < -0.05 ? -1 : 0 };
   }
 
-  var dTotal = prev ? cntDelta(m.total, prev.total, false) : null;
-  var dTouch = prev ? cntDelta(m.touched, prev.touched, true) : null;
-  var dPct = prev ? ppDelta(m.pctTouched, prev.pctTouched) : null;
-  var dSucc = prev ? ppDelta(m.successRate, prev.successRate) : null;
+  var dTotal = prev && !blank ? cntDelta(m.total, prev.total, false) : null;
+  var dTouch = prev && !blank ? cntDelta(m.touched, prev.touched, true) : null;
+  var dPct = prev && !blank ? ppDelta(m.pctTouched, prev.pctTouched) : null;
+  var dSucc = prev && !blank ? ppDelta(m.successRate, prev.successRate) : null;
 
-  host.appendChild(tile({
+  /* One gate for all four tiles. Passing the spec through here rather than
+     branching at each call site is what stops a later tile being added with the
+     blank case forgotten - the tile that still printed "0 of 0" would be the
+     one anybody believed. */
+  function kpi(spec) {
+    if (blank) {
+      spec.value = "N/A";
+      spec.delta = null; spec.deltaDir = 0; spec.denom = null; spec.spark = null;
+    }
+    host.appendChild(tile(spec));
+  }
+
+  kpi({
     hero: true,
     label: "Total " + noun,
     value: fmt(m.total),
     delta: dTotal && dTotal.text, deltaDir: dTotal ? dTotal.dir : 0,
     spark: sparkline(rows, function (r) { return r.total; }, c1)
-  }));
-  host.appendChild(tile({
+  });
+  kpi({
     label: "Touched by RPA",
     value: fmt(m.touched),
     delta: dTouch && dTouch.text, deltaDir: dTouch ? dTouch.dir : 0,
     denom: fmt(m.success) + " succeeded · " + fmt(m.fail) + " failed",
     spark: sparkline(rows, function (r) { return r.touched; }, c1)
-  }));
-  host.appendChild(tile({
+  });
+  kpi({
     label: "Percent Touched by RPA",
     value: pct(m.pctTouched),
     delta: dPct && dPct.text, deltaDir: dPct ? dPct.dir : 0,
     denom: fmt(m.touched) + " of " + fmt(m.total),
     spark: sparkline(rows, function (r) { return r.pctTouched; }, c1)
-  }));
-  host.appendChild(tile({
+  });
+  kpi({
     label: "RPA Success Rate",
     value: pct(m.successRate),
     delta: dSucc && dSucc.text, deltaDir: dSucc ? dSucc.dir : 0,
     denom: fmt(m.success) + " of " + fmt(m.touched) + " touched",
     spark: sparkline(rows, function (r) { return r.successRate; }, c2)
-  }));
+  });
 }
 
 /* ====================================================================== trend (two counts, one axis)
@@ -1090,7 +1224,7 @@ function renderTrend(tb) {
   };
   TABLES.trend();
 
-  if (rows.length === 0) { emptyChart(svg, "No data in the selected range."); return; }
+  if (rows.length === 0) { emptyChart(svg, noDataMsg()); return; }
   if (rows.length === 1) { emptyChart(svg, "Only one time bucket in range — widen the date range to see a trend."); return; }
 
   clear(svg);
@@ -1253,7 +1387,7 @@ function renderVolume(tb) {
   };
   TABLES.vol();
 
-  if (!rows.length) { emptyChart(svg, "No data in the selected range."); return; }
+  if (!rows.length) { emptyChart(svg, noDataMsg()); return; }
 
   clear(svg);
   var W = 980, H = 300, m = { t: 14, r: 12, b: 34, l: 50 };
@@ -1355,7 +1489,7 @@ function renderHBar(svg, node, tableNode, items, opts) {
   };
   TABLES[opts.tableKey]();
 
-  if (!items.length) { emptyChart(svg, "No data in the selected range."); return; }
+  if (!items.length) { emptyChart(svg, noDataMsg()); return; }
 
   clear(svg);
   var LABEL_W = opts.labelWidth || 230;
@@ -1537,31 +1671,80 @@ function buildMultiFilter(cfg) {
   panel.appendChild(div);
   var boxes = values.map(function (v) { return opt(v, v); });
 
+  /* Search is for the provider roster, which is ~90 names. Below the threshold
+     the whole list is visible at once and a search box is just another control
+     to ignore, so Type / Status / Portal do not get one. Inserted at the TOP of
+     the panel after the fact, so the option-building above stays unaware of it. */
+  var MS_SEARCH_MIN = 20;
+  var noHit = null;
+  if (values.length >= MS_SEARCH_MIN) {
+    var sbox = document.createElement("div");
+    sbox.className = "mssearch";
+    var sin = document.createElement("input");
+    sin.type = "search";
+    sin.placeholder = "Search " + cfg.noun + "…";
+    sin.setAttribute("aria-label", "Search " + cfg.noun);
+    sin.spellcheck = false;
+    sbox.appendChild(sin);
+    panel.insertBefore(sbox, panel.firstChild);
+
+    noHit = document.createElement("div");
+    noHit.className = "msnohit";
+    noHit.textContent = "No match.";
+    noHit.hidden = true;
+    panel.appendChild(noHit);
+
+    /* Hides rows, it does NOT deselect them: a provider filtered out of view
+       keeps whatever tick it had, and commit() still reads every box. Narrowing
+       the view must never silently narrow the selection. */
+    sin.addEventListener("input", function () {
+      var q = sin.value.trim().toLowerCase();
+      var hits = 0;
+      boxes.forEach(function (cb) {
+        var row = cb.closest(".msrow");
+        var show = !q || cb.value.toLowerCase().indexOf(q) >= 0;
+        if (row) { row.hidden = !show; }
+        if (show) hits++;
+      });
+      noHit.hidden = hits > 0;
+    });
+    /* Space and the arrow keys belong to the text field while it has focus. */
+    sin.addEventListener("keydown", function (e) { e.stopPropagation(); });
+  }
+
   function sync() {
     var eff = effSel(S[cfg.key], values);
     boxes.forEach(function (cb) { cb.checked = eff.indexOf(cb.value) >= 0; });
-    var isAll = eff.length >= values.length;
+    var isAll = values.length > 0 && eff.length >= values.length;
+    var isNone = eff.length === 0;
     allCb.checked = isAll;
-    allCb.indeterminate = !isAll;
+    /* Three states, one box: ticked = everything, empty = nothing, dash = some.
+       The old code dashed it whenever it was not "all", which included nothing -
+       and nothing is the one state a checkbox can show exactly. */
+    allCb.indeterminate = !isAll && !isNone;
     btn.textContent = selLabel(S[cfg.key], values, cfg.allLabel, cfg.noun);
-    btn.title = eff.join(", ");
+    btn.title = isNone ? "Nothing selected" : eff.join(", ");
   }
 
   function commit() {
     var picked = [];
     boxes.forEach(function (cb) { if (cb.checked) picked.push(cb.value); });
-    /* At least one value has to stay checked. An empty selection would draw an
-       empty dashboard, which reads as a data failure rather than as a filter
-       choice - so unchecking the last box is a no-op, and "All" is the way back. */
-    if (!picked.length) { sync(); return; }
-    S[cfg.key] = (picked.length === values.length) ? [] : picked;
+    /* Unticking the last box is allowed, and lands in the null state rather
+       than being swallowed. It used to be a no-op because an empty dashboard
+       read as a broken build; the N/A metrics are what make it read as a filter
+       choice instead, so there is no longer a reason to refuse it. */
+    S[cfg.key] = (picked.length === 0) ? null
+               : (picked.length === values.length) ? [] : picked;
     sync();
     render();
   }
 
   boxes.forEach(function (cb) { cb.addEventListener("change", commit); });
+  /* Select-all and deselect-all from the same control, following the box's own
+     new state - so the thing that ticks everything is the thing that clears it,
+     which is what a tri-state "All" is for. */
   allCb.addEventListener("change", function () {
-    S[cfg.key] = [];
+    S[cfg.key] = allCb.checked ? [] : null;
     sync();
     render();
   });
@@ -1613,6 +1796,16 @@ function buildControls() {
     });
   }
 
+  /* Provider only exists from V1.09 on - same contract as Portal, and the same
+     reason for hiding the whole group rather than showing an empty dropdown. */
+  if (D.providers.length) {
+    $("providerGroup").hidden = false;
+    buildMultiFilter({
+      wrapId: "msProvider", btnId: "fproviderBtn", panelId: "fproviderPanel",
+      key: "providers", values: D.providers, allLabel: "All providers", noun: "providers"
+    });
+  }
+
   document.addEventListener("click", closeAllMulti);
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") closeAllMulti();
@@ -1660,6 +1853,8 @@ function boot(data) {
   /* Absent in any data.json built before V1.07 - the empty array is what makes
      the PORTAL filter disappear instead of throwing. */
   D.portals = D.portals || [];
+  /* Same for PROVIDER, absent before V1.09. */
+  D.providers = D.providers || [];
 
   var gen = new Date(D.generatedUtc);
   /* "Completions through", not "Data through" - the dashboard buckets on the
@@ -1721,6 +1916,8 @@ function boot(data) {
   if (qs) S.statuses = qs;
   var qpo = parseSel(q.get("portal"), D.portals);
   if (qpo) S.portals = qpo;
+  var qpr = parseSel(q.get("provider"), D.providers);
+  if (qpr) S.providers = qpr;
 
   buildControls();
   render();
@@ -1861,13 +2058,36 @@ function showGate(env, msg) {
   pw.focus();
 }
 
-/* The timestamp defeats the GitHub Pages CDN, which otherwise serves a stale
-   data.json for up to ~10 minutes after a refresh push. */
-fetch("data.json?t=" + Date.now(), { cache: "no-store" })
-  .then(function (r) {
-    if (!r.ok) throw new Error("HTTP " + r.status + " fetching data.json");
-    return r.json();
-  })
+/* ------------------------------------------------------------- payload source
+   Two delivery modes share this one file, and which one is active is decided by
+   whether the standalone build injected a data block:
+
+   - HOSTED (GitHub Pages): no #pa-inline-data block, so the payload is fetched
+     from data.json beside index.html. The timestamp defeats the Pages CDN,
+     which otherwise serves a stale data.json for ~10 minutes after a push.
+   - STANDALONE (Build-Standalone.ps1): the build injects #pa-inline-data
+     holding the payload inline, so there is no fetch at all. That is precisely
+     what lets the single file work straight from disk, where file:// security
+     blocks a fetch - see the catch below.
+
+   With no block injected this is the hosted path unchanged, so the published
+   dashboard behaves exactly as it did before standalone mode existed. */
+function loadPayload() {
+  var inline = document.getElementById("pa-inline-data");
+  if (inline) {
+    /* Parsed INSIDE the chain rather than before it, so a truncated or mangled
+       inline block rejects into the .catch below instead of throwing uncaught
+       and leaving a blank page with nothing on screen to explain it. */
+    return Promise.resolve().then(function () { return JSON.parse(inline.textContent); });
+  }
+  return fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status + " fetching data.json");
+      return r.json();
+    });
+}
+
+loadPayload()
   .then(function (payload) {
     if (!payload || !payload.enc) { boot(payload); return; }   /* plaintext build */
 
@@ -1884,8 +2104,15 @@ fetch("data.json?t=" + Date.now(), { cache: "no-store" })
       });
   })
   .catch(function (e) {
+    /* The file:// advice below is correct for the hosted build and actively
+       wrong for the standalone one, which is MEANT to be opened from disk and
+       has no fetch to block. Branch on the inline block so a damaged standalone
+       file does not send someone off to run Serve-Dashboard.ps1 for nothing. */
+    var inlined = !!document.getElementById("pa-inline-data");
     var localFile = location.protocol === "file:";
-    fail(localFile
+    fail(inlined
+      ? "The dashboard data embedded in this file could not be read. The file was probably altered or truncated in transit - an email gateway or a partial download will do it. Ask for a fresh copy."
+      : localFile
       ? "Opening this file straight from disk blocks the data fetch (browser file:// security) — this is expected and does not mean the dashboard is broken. To preview locally, run Serve-Dashboard.ps1 from the project folder and open the URL it prints. Once the folder is on GitHub Pages it loads normally."
       : "data.json could not be loaded. Confirm it sits next to index.html and that Build-Dashboard.ps1 ran without errors.", e && e.message);
   });
