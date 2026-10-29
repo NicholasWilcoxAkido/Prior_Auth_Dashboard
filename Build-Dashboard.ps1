@@ -146,14 +146,35 @@ $COL_FREASON= 'Bot Run Fail Reason'
 # Arrived in V1.07. OPTIONAL on purpose: an export that predates it still has to
 # build, so this column is read when present and skipped when not.
 $COL_PORTAL = 'Insurance Portal'
-# Also arrived in V1.07, also optional. This column holds provider NAMES - the
-# same class of PPI as the coordinator names in RC Assigned - so it is read for
-# exactly one purpose: deciding whether an Appointment row is a hard or an easy
-# schedule. The name is converted to that one word during the sanitize stage and
-# the original is overwritten in place, so nothing downstream of ingest can see
-# it, let alone publish it. The roster that drives the decision lives in a
-# gitignored file (see $HARD_ROSTER) rather than in this script, which is public.
+# Also arrived in V1.07, also optional. This column holds provider NAMES and is
+# read for TWO purposes from V1.09 on:
+#
+#   1. the Easy/Hard schedule verdict, as before - the name is matched against
+#      the gitignored roster (see $HARD_ROSTER below) and reduced to one word;
+#   2. the PROVIDER dimension, published as a filter with the names intact.
+#
+# (2) is a deliberate reversal of the V1.07-V1.08 rule that this column never
+# left the sanitize stage. It is published at the data owner's explicit
+# instruction: these are clinician/practice names, not member identifiers, and
+# the audience for the dashboard already knows them. Two consequences worth
+# naming rather than discovering:
+#   - data.json now carries the full provider roster, so the access gate is what
+#     keeps it off the open web. The repo gate below still blocks these names
+#     from README.md and the scripts, which ARE pushed in plaintext.
+#   - the hard-schedule roster is now DERIVABLE from the published aggregates:
+#     filter to one provider and read whether its rows land in Easy or Hard
+#     Schedules. The roster stays out of the repo, but it is no longer secret to
+#     anyone holding the passphrase.
+# Nothing here changes for RC Assigned or Bot Run Fail Reason: coordinator names
+# and member identifiers are still destroyed at ingest.
 $COL_PROVIDER = 'Encounter Provider'
+
+# Added to each row during sanitize to carry the published provider name, so the
+# Easy/Hard verdict can keep overwriting $COL_PROVIDER in place exactly as it did
+# before. Two fields rather than one because they are two different values: the
+# verdict feeds the Type dimension, the name feeds the Provider dimension, and
+# collapsing them would make the split depend on the published label set.
+$COL_PROVNAME = 'Provider Name'
 
 # Every date on the dashboard buckets on THIS column. It is the completion date,
 # so the dashboard reports throughput (what got finished in a period), not intake
@@ -193,6 +214,19 @@ function Normalize-ProviderText {
     return ((("$Value") -replace '-', ' ') -replace '\s+', ' ').Trim()
 }
 
+# The PUBLISHED form of a provider name. Deliberately NOT Normalize-ProviderText:
+# that one flattens hyphens so one roster entry can match both spellings of a
+# double-barrelled surname, which is right for matching and wrong for display -
+# it would print somebody's name with the hyphen missing. Whitespace only here,
+# and no title-casing, for the same reason Normalize-Portal leaves case alone.
+# '(Blank)' is a real answer: ~25% of rows have no encounter provider.
+function Normalize-Provider {
+    param([string] $Value)
+    $v = (("$Value") -replace '\s+', ' ').Trim()
+    if (-not $v) { return '(Blank)' }
+    return $v
+}
+
 # Type arrives with inconsistent casing (Appointment / DIAGNOSTIC / REFERRAL / Procedure).
 # Defined here rather than with the other normalizers because the sanitize stage
 # below needs it to recognize Appointment rows.
@@ -220,6 +254,14 @@ if (Test-Path -LiteralPath $HARD_ROSTER) {
 $hasProvider = $COL_PROVIDER -in $present
 $canSplit    = $hasProvider -and $hardPatterns.Count -gt 0
 
+# The sanitize stage adds $COL_PROVNAME to every row. If the export ever ships a
+# column of that name itself the row would carry two properties with one name,
+# and $r.$COL_PROVNAME would silently resolve to an array - producing a Provider
+# dimension of stringified arrays rather than names. Fail with the reason instead.
+if ($COL_PROVNAME -in $present) {
+    throw "Source already has a '$COL_PROVNAME' column, which the build adds itself during sanitize. Rename the export's column or change `$COL_PROVNAME in this script."
+}
+
 # Deliberately prints the COUNT and never the patterns. This output gets pasted
 # into README.md and into chat, and a roster of provider names is precisely what
 # this design keeps out of both.
@@ -241,10 +283,13 @@ if ($canSplit) {
 #                           Coordinator names and user IDs are discarded; only
 #                           the bot-or-not distinction is needed downstream.
 #   Encounter Provider   -> 'Easy' | 'Hard' | '(n/a)'
-#                           Provider names are discarded the same way; only the
-#                           hard-roster verdict survives, and only on Appointment
-#                           rows. '(n/a)' is every other Type, where the split
-#                           has no meaning.
+#                           The hard-roster verdict, on Appointment rows only.
+#                           '(n/a)' is every other Type, where the split has no
+#                           meaning.
+#   + 'Provider Name'    -> the provider name, whitespace-collapsed, '(Blank)'
+#                           when empty. ADDED here rather than destroyed: from
+#                           V1.09 this is a published dimension. It is the one
+#                           field in this stage that survives by design.
 #   Bot Run Fail Reason  -> names and identifiers replaced with [name] / [id] / [date]
 
 # Coordinator names are harvested from the file itself, so the redaction list
@@ -305,11 +350,14 @@ $sanBot = 0; $sanHuman = 0; $sanBlank = 0; $sanReasons = 0
 # quotes one.
 $exportIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
-# Same idea for provider names: captured here, before the column is overwritten,
-# so the gates below can prove no published file quotes one. Full display values
-# only - NOT split into word parts the way coordinator names are. Provider values
-# include practice-style names whose individual words ('Health', 'Family') occur
-# in ordinary README prose, and a gate that cries wolf gets switched off.
+# Same idea for provider names: captured here, before the column is overwritten.
+# Since V1.09 these names ARE published in data.json, so this set no longer
+# guards the payload - it guards the files that ship in plaintext (README.md and
+# the scripts), where a pasted example would publish the roster to the open repo.
+# Full display values only - NOT split into word parts the way coordinator names
+# are. Provider values include practice-style names whose individual words
+# ('Health', 'Family') occur in ordinary README prose, and a gate that cries wolf
+# gets switched off.
 $providerValues = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
 # Per-pattern row counts, so the operator can confirm each roster entry hits the
@@ -324,10 +372,18 @@ foreach ($r in $rows) {
     elseif ([string]::IsNullOrWhiteSpace($rc)) { $r.$COL_RC = '(unassigned)';  $sanBlank++ }
     else                                       { $r.$COL_RC = '(human)';       $sanHuman++ }
 
-    # --- Encounter Provider -> Easy/Hard verdict, name destroyed in place.
-    # The verdict is only computed for Appointment rows; the split is defined
-    # as a subdivision of that Type and means nothing for Diagnostic/Referral.
+    # --- Encounter Provider -> Easy/Hard verdict in place, name moved to its own
+    # field. The verdict is only computed for Appointment rows; the split is
+    # defined as a subdivision of that Type and means nothing for
+    # Diagnostic/Referral. The name is kept for every Type, because the Provider
+    # filter scopes the whole dashboard rather than just the scheduling half.
     if ($hasProvider) {
+        # The published name is captured BEFORE the verdict overwrites the column.
+        # psnoteproperty rather than Add-Member: same result, and Add-Member's
+        # per-call overhead is measurable across a six-figure row count.
+        $r.PSObject.Properties.Add(
+            [psnoteproperty]::new($COL_PROVNAME, (Normalize-Provider -Value "$($r.$COL_PROVIDER)")))
+
         $prov = Normalize-ProviderText -Value "$($r.$COL_PROVIDER)"
         if ($prov) { [void]$providerValues.Add($prov) }
         if ($canSplit -and (Normalize-Type -Value "$($r.$COL_TYPE)") -eq 'Appointment') {
@@ -358,7 +414,9 @@ Write-Host ("Sanitized: RC Assigned -> {0} bot / {1} human / {2} unassigned ({3}
     $sanBot, $sanHuman, $sanBlank, $personNames.Count) -ForegroundColor DarkGray
 Write-Host ("Sanitized: {0} fail reasons had names/identifiers redacted" -f $sanReasons) -ForegroundColor DarkGray
 if ($hasProvider) {
-    Write-Host ("Sanitized: Encounter Provider -> {0} hard / {1} easy / {2} n-a ({3} provider names discarded)" -f `
+    # Says PUBLISHED, not discarded, because that is what changed in V1.09 and a
+    # line that still read 'discarded' would be the most misleading output here.
+    Write-Host ("Sanitized: Encounter Provider -> {0} hard / {1} easy / {2} n-a ({3} provider names PUBLISHED as the Provider dimension)" -f `
         $sanHard, $sanEasy, $sanNa, $providerValues.Count) -ForegroundColor DarkGray
     if ($canSplit) {
         # Pattern index, not the pattern. Line up with providers.hard.txt to read it.
@@ -381,14 +439,17 @@ if (-not $SkipSanitizedCsv) {
     $sanDir = Join-Path $root 'sanitized'
     if (-not (Test-Path $sanDir)) { New-Item -ItemType Directory -Force -Path $sanDir | Out-Null }
     $sanPath = Join-Path $sanDir ([IO.Path]::GetFileNameWithoutExtension($Source) + '.sanitized.csv')
-    # Insurance Portal joins the list as-is. Encounter Provider joins it only
-    # under a renamed header: the column no longer holds a provider by this
-    # point, it holds the Easy/Hard verdict, and a column labelled 'Encounter
-    # Provider' containing the word 'Hard' invites someone to re-join it to a
-    # name later.
+    # Insurance Portal joins the list as-is. The provider column arrives as TWO
+    # columns, because by this point it holds two different values: the Easy/Hard
+    # verdict (under the renamed header 'Schedule Class', since a column labelled
+    # 'Encounter Provider' containing the word 'Hard' invites someone to re-join
+    # it to a name later) and the provider name itself.
     $sanCols = @($COL_DATE, $COL_CDATE, $COL_TYPE, $COL_STATUS, $COL_RC, $COL_FDATE, $COL_FREASON)
     if ($hasPortal) { $sanCols += $COL_PORTAL }
-    if ($hasProvider) { $sanCols += @{ Name = 'Schedule Class'; Expression = { $_.$COL_PROVIDER } } }
+    if ($hasProvider) {
+        $sanCols += @{ Name = 'Schedule Class'; Expression = { $_.$COL_PROVIDER } }
+        $sanCols += $COL_PROVNAME
+    }
     $rows |
         Select-Object $sanCols |
         Export-Csv -LiteralPath $sanPath -NoTypeInformation -Encoding utf8
@@ -536,6 +597,7 @@ $typeIdx   = [ordered]@{}
 $statusIdx = [ordered]@{}
 $reasonIdx = [ordered]@{}
 $portalIdx = [ordered]@{}
+$provIdx   = [ordered]@{}
 $dateIdx   = [ordered]@{}
 $cells     = @{}
 
@@ -585,8 +647,12 @@ foreach ($r in $rows) {
     $si = Get-Index $statusIdx (Normalize-Status -Value "$($r.$COL_STATUS)")
     $ri = if ($reason) { Get-Index $reasonIdx $reason } else { -1 }
     $pi = if ($hasPortal) { Get-Index $portalIdx (Normalize-Portal -Value "$($r.$COL_PORTAL)") } else { -1 }
+    # Already normalized during sanitize, so no second Normalize-Provider call -
+    # normalizing twice is where the published label and the aggregation key get
+    # a chance to drift apart.
+    $vi = if ($hasProvider) { Get-Index $provIdx "$($r.$COL_PROVNAME)" } else { -1 }
 
-    $key = "$di|$ti|$si|$b|$ri|$pi"
+    $key = "$di|$ti|$si|$b|$ri|$pi|$vi"
     if ($cells.ContainsKey($key)) { $cells[$key]++ } else { $cells[$key] = 1 }
 }
 
@@ -626,11 +692,20 @@ $portalOrder = @($portalIdx.Keys | Sort-Object `
     @{ Expression = { if ($_ -eq '(Blank)') { 1 } else { 0 } } }, `
     @{ Expression = { $_ } })
 
+# Providers sort the same way portals do, and for the same reason: the roster is
+# the clinic's to change, so a provider appearing in a new export has to land
+# somewhere sensible without a hand-written order. Alphabetical, '(Blank)' last -
+# it is a quarter of all rows and would otherwise head a 90-entry checkbox list.
+$provOrder = @($provIdx.Keys | Sort-Object `
+    @{ Expression = { if ($_ -eq '(Blank)') { 1 } else { 0 } } }, `
+    @{ Expression = { $_ } })
+
 $typeRemap = @{};   for ($i = 0; $i -lt $typeOrder.Count;   $i++) { $typeRemap[$typeIdx[$typeOrder[$i]]]     = $i }
 $statusRemap = @{}; for ($i = 0; $i -lt $statusOrder.Count; $i++) { $statusRemap[$statusIdx[$statusOrder[$i]]] = $i }
 $portalRemap = @{}; for ($i = 0; $i -lt $portalOrder.Count; $i++) { $portalRemap[$portalIdx[$portalOrder[$i]]] = $i }
+$provRemap = @{};   for ($i = 0; $i -lt $provOrder.Count;   $i++) { $provRemap[$provIdx[$provOrder[$i]]]     = $i }
 
-# Fact tuple: [date, type, status, bucket, reason, COUNT, portal]
+# Fact tuple: [date, type, status, bucket, reason, COUNT, portal, provider]
 #
 # The portal index is APPENDED AFTER the count rather than slotted in with the
 # other dimensions, which is the wrong shape semantically and deliberate anyway.
@@ -639,6 +714,17 @@ $portalRemap = @{}; for ($i = 0; $i -lt $portalOrder.Count; $i++) { $portalRemap
 # count at index 5 means that pairing renders the previous dashboard exactly and
 # just hides the PORTAL filter; moving the count to index 6 would have turned
 # every number on the page into NaN for those minutes.
+#
+# Provider follows at index 7 for exactly the same reason, one version later. A
+# V1.08 data.json has no index 7, publishes no 'providers' list, and the client
+# reads that empty list as "hide the Provider filter" - so the stale pairing
+# renders the V1.08 dashboard rather than a page of NaN.
+#
+# Portal keeps slot 6 even on an export that has no portal column but does have
+# providers, where it is written as -1 and never read. Without that placeholder
+# the provider index would slide into the portal slot and be filtered as a
+# portal - a combination this clinic's exports have never produced, which is
+# precisely why it would go unnoticed.
 $facts = [System.Collections.Generic.List[object]]::new()
 foreach ($k in $cells.Keys) {
     $p = $k -split '\|'
@@ -650,7 +736,10 @@ foreach ($k in $cells.Keys) {
         [int]$p[4],
         $cells[$k]
     )
-    if ($hasPortal) { $row += $portalRemap[[int]$p[5]] }
+    if ($hasPortal -or $hasProvider) {
+        $row += $(if ($hasPortal) { $portalRemap[[int]$p[5]] } else { -1 })
+    }
+    if ($hasProvider) { $row += $provRemap[[int]$p[6]] }
     $facts.Add($row)
 }
 # Sort by the remapped (chronological) date index.
@@ -673,6 +762,10 @@ $payload = [ordered]@{
     # Always emitted. Empty means "this export has no Insurance Portal column",
     # which is the single condition the client tests to hide the PORTAL filter.
     portals      = @(if ($hasPortal) { $portalOrder } else { @() })
+    # Same contract for providers, and the same single condition hides that
+    # filter. Unlike every other dimension here these are personal names rather
+    # than categories - see the note on $COL_PROVIDER for why they ship.
+    providers    = @(if ($hasProvider) { $provOrder } else { @() })
     reasons      = @($reasonIdx.Keys)
     facts        = $facts
 }
@@ -711,17 +804,44 @@ foreach ($label in $portalOrder) {
     elseif ($label.Length -gt 40) { $leaks += "portal label too long to be a brand name: '$label'" }
 }
 
-# Coordinator names must not survive anywhere in the published dimensions.
+# Provider labels also pass through verbatim, so they get the same treatment -
+# publishing a NAME is the decision that was made, publishing whatever else the
+# column might one day contain is not. The digit threshold is 6 rather than the
+# portals' 3 because a practice name can legitimately carry a street or suite
+# number, while the identifiers this guards against (member IDs, auth numbers)
+# are 8+ digits. No provider value in V1.09 contains a digit at all, so this
+# fires only on a genuine change in what the column holds.
+foreach ($label in $provOrder) {
+    if ($label -match '\d{6,}') { $leaks += "digit run in provider: '$label'" }
+    elseif ($label.Length -gt 60) { $leaks += "provider label too long to be a name: '$label'" }
+    elseif ($label -imatch 'member\s*id|authorization number') { $leaks += "identifier phrasing in provider: '$label'" }
+}
+
+# Coordinator names must not survive anywhere in the published dimensions. From
+# V1.09 this loop is the ONLY coordinator check on the payload - the repo gate's
+# token scan had to stop treating data.json as prose once the file started
+# carrying provider names - so the label sets below need to stay complete.
+#
+# $provOrder is NOT in this list, and leaving it out is a judgement rather than
+# an oversight. The match is a word-boundary hit on any name part of 4+
+# characters, so one coordinator who shares a surname with one of ~90 providers
+# would fail every build - and a shared surname is not a coordinator leak, it is
+# two different people. The provider dimension is checked for identifiers above
+# instead, which is the thing that would actually be a leak.
 foreach ($n in $personNames) {
     if ($n.Length -lt 4) { continue }
     foreach ($label in (@($reasonIdx.Keys) + @($typeOrder) + @($statusOrder) + @($portalOrder))) {
         if ($label -imatch ('\b' + [regex]::Escape($n) + '\b')) { $leaks += "coordinator name '$n' in '$label'" }
     }
 }
-# Provider names likewise. Resolve-Type is built to emit fixed literals, so this
-# can only fire if someone rewires it to pass a provider value through - which is
-# exactly the mistake worth catching, since the Type dimension is published and
-# the whole point of the Easy/Hard split is that the roster stays private.
+# Provider names must not reach the TYPE dimension, which is a different claim
+# from "must not be published" now that the Provider dimension exists.
+# Resolve-Type is built to emit fixed literals, so this fires only if someone
+# rewires it to pass a provider value through. That still matters: the Easy/Hard
+# labels are the published form of the private roster, and a provider name
+# appearing as a Type would state the mapping outright rather than leaving it to
+# be inferred. $provOrder is excluded here for the obvious reason - every value
+# in it is a provider name by design.
 foreach ($pv in $providerValues) {
     if ($pv.Length -lt 4) { continue }
     foreach ($label in (@($typeOrder) + @($statusOrder) + @($portalOrder) + @($reasonIdx.Keys))) {
@@ -737,7 +857,8 @@ if ($leaks.Count) {
     $leaks | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     throw "Potential identifiers survived normalization. Add a rule to `$REASON_RULES for the pattern(s) above, then re-run."
 }
-Write-Host ("Publish gate: no identifier-like text in {0} reason categories / {1} portals." -f $reasonIdx.Count, $portalOrder.Count) -ForegroundColor DarkGray
+Write-Host ("Publish gate: no identifier-like text in {0} reason categories / {1} portals / {2} providers." -f `
+    $reasonIdx.Count, $portalOrder.Count, $provOrder.Count) -ForegroundColor DarkGray
 
 # ------------------------------------------------- repo gate (documentation too)
 # data.json is not the only thing that gets pushed. Documenting a new failure
@@ -758,25 +879,55 @@ foreach ($n in $personNames) {
     if ($n.Length -ge 4 -and $n -notmatch '[\s,]') { [void]$nameParts.Add($n) }
 }
 
-$repoFiles = @('README.md', 'Build-Dashboard.ps1', 'Serve-Dashboard.ps1', '.gitignore') |
+# Every file that gets pushed belongs in this list. Build-Standalone.ps1 is here
+# because it is published too - a script that is documented but ungated is the
+# exact blind spot this safeguard exists to cover, and it is the kind of file
+# whose comments invite a real example.
+$repoFiles = @('README.md', 'Build-Dashboard.ps1', 'Build-Standalone.ps1', 'Serve-Dashboard.ps1', '.gitignore') |
     ForEach-Object { Join-Path $root $_ }
 $repoFiles += $OutFile
 $repoFiles += (Join-Path $root 'docs\index.html')
+
+# data.json is the ONE file in the list that is expected to contain provider
+# names, and only since V1.09. Everything else here ships as plaintext in a
+# public repo; data.json ships encrypted and carries the Provider dimension on
+# purpose. Without this exemption the provider scan below would fail every
+# single build, and a gate that always fails gets commented out - which would
+# take the export-identifier and coordinator-name scans down with it. Those two
+# still run against data.json, because neither belongs there.
+$outFull = [IO.Path]::GetFullPath($OutFile)
 
 $repoLeaks = @()
 foreach ($f in $repoFiles) {
     if (-not (Test-Path -LiteralPath $f)) { continue }
     $txt = [IO.File]::ReadAllText($f)
     $name = Split-Path -Leaf $f
+    $isPayload = ([IO.Path]::GetFullPath($f) -eq $outFull)
+    # The export-identifier scan runs on EVERY file including the payload: a
+    # member ID or auth number has no business in any of them, and these tokens
+    # cannot collide with a name.
+    #
+    # The coordinator-name scan skips the payload, for the same reason the
+    # provider scan below does. $nameParts holds single name parts of 4+
+    # characters harvested from RC Assigned, and data.json now publishes ~90
+    # provider names - so the two sets overlap by simple coincidence. The first
+    # V1.09 build proved it, failing on three names that are a coordinator in the
+    # roster and a different person in the provider column. The publish gate
+    # above checks each published label set against $personNames individually and
+    # covers every dimension except providers, so nothing is lost here; a blunt
+    # token scan over a file that is now SUPPOSED to contain names is what has to
+    # go.
     foreach ($m in [regex]::Matches($txt, '\b[A-Za-z0-9]{4,}\b')) {
         $tok = $m.Value
         if ($exportIds.Contains($tok)) { $repoLeaks += "${name}: export identifier '$tok'" }
-        elseif ($nameParts.Contains($tok)) { $repoLeaks += "${name}: coordinator name '$tok'" }
+        elseif (-not $isPayload -and $nameParts.Contains($tok)) { $repoLeaks += "${name}: coordinator name '$tok'" }
     }
     # Provider names and roster patterns, matched as whole values against the
     # normalized text rather than token-by-token. Documenting the Easy/Hard split
     # is the obvious moment to paste in "the providers are X, Y, Z" as an example,
-    # and that one sentence would publish the roster this design keeps private.
+    # and that one sentence would publish to the open repo what the access gate
+    # is holding back in data.json.
+    if ($isPayload) { continue }
     $flat = Normalize-ProviderText -Value $txt
     foreach ($pv in $providerValues) {
         if ($pv.Length -lt 6) { continue }
@@ -793,7 +944,7 @@ if ($repoLeaks.Count) {
     $repoLeaks | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     throw "Replace the value(s) above with a described shape (e.g. '<11-digit number>'), then re-run. Never paste raw error text into a published file."
 }
-Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms / {3} provider names." -f `
+Write-Host ("Repo gate: {0} files clean against {1} export identifiers / {2} name forms / {3} provider names (data.json exempt from the provider scan - it publishes them)." -f `
     $repoFiles.Count, $exportIds.Count, $nameParts.Count, $providerValues.Count) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------- encrypt output
