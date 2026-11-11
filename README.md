@@ -598,7 +598,7 @@ Append these to the embed URL to control the initial view:
 | Parameter | Values | Effect |
 |---|---|---|
 | `?theme=` | `dark`, `light` | Pins the theme. Use `dark` to match a dark Notion workspace — the embed can't detect Notion's theme on its own. |
-| `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `ytd`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. |
+| `?range=` | `14d`, `1m`, `1q`, `ytd`, `all` | Sets the opening date range; the default without this parameter is `1m`. Older values (`7d`, `30d`, `90d`, `mtd`) still work — they map to the nearest current preset, so existing embeds don't break. `mtd` maps to `1m`, which is also now the default. |
 | `?type=` | `Easy Schedules`, `Hard Schedules`, `Diagnostic`, `Procedure`, `Referral`, `Immunization`, `all` — or a comma-separated list. Shorthands: `easy`, `hard`, and `appointment`/`schedules` for both halves | Sets the opening Type filter. All four filters are multi-select, so `?type=Hard Schedules,Referral` opens with two Types included. `?type=appointment` predates the Easy/Hard split and still works — it selects both halves, so existing embeds are unchanged. A value this export doesn't contain is ignored and the default (both schedule types) stands. |
 | `?status=` | `Auth Approved`, `Auth Partially Approved`, `Auth Not Required`, `Auth Denied`, `Auth Blocked`, `all` — or a comma-separated list | Sets the opening Status filter; the default is `all`. Spaces in a status name need URL-encoding, which the browser does for you if you type the URL in the address bar. `Auth Partially Approved` appears from the V1.11-era exports on; it is its **own** outcome, not a variant of `Auth Approved`, because a partial approval means some requested units or services were granted and others were not — folding the two together would overstate approvals. A value this export doesn't contain is ignored, so a link carrying it against an older `data.json` falls back to `all`. |
 | `?portal=` | Any published portal label (`Aerial`, `IEHP`, `Medpoint`, `Optum Curo`, …), `(Blank)`, `all` — or a comma-separated list. `Curo` and `Optum` are kept as aliases for `Optum Curo` | Sets the opening Portal filter; the default is `all`. An unrecognized value is **ignored**, leaving `all` — so a typo shows every portal rather than an empty dashboard. That is why the two pre-merge spellings are aliased rather than dropped (see [Two names, one portal](#two-names-one-portal)): an old `?portal=Curo` link would otherwise look fine while quietly showing everything. Ignored on an export with no `Insurance Portal` column, where the filter doesn't exist. |
@@ -611,9 +611,10 @@ https://nicholaswilcoxakido.github.io/Prior_Auth_Dashboard/?theme=dark&range=1q
 ```
 
 A good pattern is several embeds on one Notion page, each pinned to a different
-range — e.g. a 14-day operational view near the top and the default YTD trend
-below. The 14-day view is also the one that shows ▲▼ deltas, which the YTD
-default can't yet (see *Three decisions worth knowing about*).
+range — e.g. the default 1M operational view near the top and `?range=ytd` or
+`?range=all` below it for the full-year ramp. Pin the long view explicitly: it is
+no longer what you get for free, and it is the one place the year-to-date climb
+from 5.4% to 40.2% is visible.
 
 ### Notion caveats
 
@@ -794,12 +795,12 @@ starts before the first row in the export, no delta is shown at all — an earli
 version compared YTD against a partly-empty 2025 window and reported "+401%
 growth" that was really just missing history.
 
-> Because the default preset is now **YTD** and the export starts Jan 1, 2026,
-> the opening view has **no ▲▼ deltas** — there is no 2025 to compare against, and
-> the tiles say so in place of a number. This is the safeguard working, not a
-> bug. Deltas appear as soon as you pick a shorter preset, and the default will
-> start showing them once the export holds more than a year of completions.
-> If you want deltas visible on first load, embed with `?range=1q`.
+> **The default preset is `1m`, and one reason is this safeguard.** Under the
+> previous `YTD` default the opening view had **no ▲▼ deltas at all** — the export
+> starts Jan 1, 2026, so there was no 2025 to compare against and every tile said
+> so in place of a number. A 31-day window has its prior period entirely inside
+> the export, so the deltas work on first load. `YTD` and `All` still show no
+> deltas when picked, which remains the safeguard working rather than a bug.
 
 **Date presets anchor to the latest date in the export, not to today.** A
 "last 7 days" window measured from today would come up nearly empty whenever the
@@ -862,15 +863,25 @@ range ending earlier won't see them. On every built-in preset they are included.
 ## Reading the dashboard
 
 - **Filters** sit in one row and scope everything below them. Presets are
-  **14 Days · 1M · 1Q · YTD · All**; the default is **YTD** with both scheduling
+  **14 Days · 1M · 1Q · YTD · All**; the default is **1M** with both scheduling
   types ticked (`Easy Schedules` + `Hard Schedules`, i.e. the old
   `Type = Appointment` slice). `1M` and `1Q` are inclusive calendar months (a `1M`
   window ending Oct 8 starts Sep 9), and `YTD` runs from Jan 1 of the latest
-  year in the export. Anything past 70 days buckets by week, so the opening view
-  is weekly rather than daily. **`YTD` and `All` currently show the same
-  window**, because the earliest completion date in the export is Jan 1, 2026 —
-  so today the default view is also the whole history. That will diverge in
-  January, when `YTD` resets and `All` keeps 2026.
+  year in the export. Anything past 70 days buckets by week, so the default view
+  is **daily** at 31 days and `1Q`/`YTD`/`All` are weekly. **`YTD` and `All`
+  currently show the same window**, because the earliest completion date in the
+  export is Jan 1, 2026. That will diverge in January, when `YTD` resets and
+  `All` keeps 2026.
+- **Why the default is a month and not the year.** Every rate on the page is a
+  period average, and this program ramped hard inside the period: percent of
+  total submitted ran 5.4% in January and 40.2% in October. `YTD` therefore
+  reported **23.7%** against a current run rate near 40%, understating the
+  program by about 15pp on its own goal tile. `1M` was chosen over `MTD` and
+  `14 Days` on measured grounds — it keeps daily bars, its prior period fits
+  inside the export so the deltas are real, and because presets anchor to
+  `dateMax` it is always the trailing ~31 days, where `MTD` would collapse to a
+  single part-day on a first-of-month export. The trade is that the default
+  window is the one still filling in; see *The date basis*.
 - **Every number is a count of authorizations *completed* in the window**, not
   requested in it. See *The date basis* above — this is the single most
   misreadable thing about the dashboard.

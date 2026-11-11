@@ -529,7 +529,21 @@ var D = null;
    N/A state added below is what makes the difference legible, so the state is
    now reachable. It is deliberately a distinct value from [] and not just an
    empty array, because [] already means the exact opposite. */
-var S = { preset: "ytd", from: null, to: null, types: [], statuses: [], portals: [], providers: [], tex: false };
+/* The default window is 1M, not YTD, and the reason is that YTD averages the
+   program's own ramp-up into its headline. Percent of total submitted ran 5.4%
+   in January and 40.2% in October, so YTD reported 23.7% against a current run
+   rate near 40% - it understated the program by ~15pp on its own goal tile.
+   YTD also has no prior period inside a single-year export, so priorWindow()
+   returns null and the default view showed no deltas at all.
+   1M rather than MTD or 14d for three measured reasons: it stays under the
+   70-day weekly-bucketing threshold so the charts keep daily bars; its prior
+   period sits entirely inside the export, so the deltas are real (+4.4pp
+   success, against MTD's -10.2pp on the same underlying data - that spread is
+   noise); and because presets anchor to dateMax it is always the trailing ~31
+   days, where MTD would collapse to a single part-day on a first-of-month
+   export. Shorter windows are one click away, which is the right place for a
+   view that swings. */
+var S = { preset: "1m", from: null, to: null, types: [], statuses: [], portals: [], providers: [], tex: false };
 var TABLES = {};
 
 /* Every label a scheduling authorization can carry. From V1.08 the build splits
