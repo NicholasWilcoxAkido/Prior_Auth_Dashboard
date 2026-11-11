@@ -146,6 +146,35 @@ $COL_FREASON= 'Bot Run Fail Reason'
 # Arrived in V1.07. OPTIONAL on purpose: an export that predates it still has to
 # build, so this column is read when present and skipped when not.
 $COL_PORTAL = 'Insurance Portal'
+# Arrived in V1.10, optional on the same terms. A COUNT, not a category: it is
+# summed into each aggregate cell rather than indexed as a dimension, and it is
+# the first measure on this dashboard that is not a row count.
+#
+# Nearly always blank - 22 of 115,020 rows in V1.10 - because it only means
+# anything on work the bot had to come back to. Blank is therefore 0, not
+# missing: a row the bot never re-checked genuinely had zero re-checks. That is
+# why there is no '(Blank)' bucket here as there is for Portal and Provider.
+$COL_PENDING = '# of times pending notes checked'
+# Arrived in V1.10, read from V1.11 on, optional on the same terms. A yes/no flag
+# meaning the bot worked the row, and the THIRD way a row can count as attempted
+# (see the bucket block below) at the data owner's explicit instruction.
+#
+# It does NOT agree with the other two and is not meant to: the column was
+# switched on in October 2026, so it is blank for every row completed Jan-Sep
+# 2026, covers 21.9% of October's attempts and 91.6% of November's. Two
+# consequences worth naming rather than discovering:
+#   - it cannot be used to check the historical 'attempted' figure, because there
+#     is no history in it to check against;
+#   - 'Attempted to Submit by RPA' is now a definition whose REACH GROWS as the
+#     column fills. The rows it adds on its own are counted and printed below, so
+#     a jump that is really the field backfilling cannot be mistaken for the bot
+#     taking on more work.
+# In V1.11 it adds 54 rows that have no bot assignment and no fail date, and 44
+# of those are DIAGNOSTIC/REFERRAL - order types where coverage is 1-3%. That is
+# the reason this clause matters despite the tiny count: order-type automation
+# appears to be recorded ONLY here, so without it the dashboard would be blind to
+# the bot's expansion rather than merely 54 rows short.
+$COL_WORKED = 'Worked by Automation'
 # Also arrived in V1.07, also optional. This column holds provider NAMES and is
 # read for TWO purposes from V1.09 on:
 #
@@ -195,6 +224,18 @@ if ($missing.Count) {
 $hasPortal = $COL_PORTAL -in $present
 Write-Host ("Insurance Portal: {0}" -f $(if ($hasPortal) { 'present' } else { "absent - PORTAL filter will be hidden" }))
 
+# Same contract again: the dashboard hides the whole second KPI row when this is
+# false, so a pre-V1.10 export degrades to the four original tiles rather than
+# showing two tiles reading 0.
+$hasPending = $COL_PENDING -in $present
+Write-Host ("Pending notes column: {0}" -f $(if ($hasPending) { 'present' } else { 'absent - the Pending Notes tiles will be hidden' }))
+
+# No filter and no tile hangs off this one, so an export without it needs no
+# degrade path: the attempted definition simply falls back to the two original
+# clauses and every figure matches a pre-V1.11 build exactly.
+$hasWorked = $COL_WORKED -in $present
+Write-Host ("Worked by Automation: {0}" -f $(if ($hasWorked) { 'present' } else { 'absent - attempted falls back to RC Assigned + Bot Run Fail Date' }))
+
 # ---------------------------------------------------------------- hard roster
 # The list of providers whose appointments count as "hard" to schedule. Kept in
 # a gitignored sidecar file, NOT in this script: the patterns are provider names
@@ -225,6 +266,151 @@ function Normalize-Provider {
     $v = (("$Value") -replace '\s+', ' ').Trim()
     if (-not $v) { return '(Blank)' }
     return $v
+}
+
+# The middle portion of a name - everything between the first and last token,
+# lowercased, with '.' and ',' already stripped by the caller's tokenizer so an
+# initial written 'R.' compares equal to one written 'R'. Empty for a two-token
+# name, which is the whole point: that is the spelling with no middle name.
+function Get-ProviderMiddle {
+    param([string] $Name)
+    $toks = @((("$Name") -replace '[.,]', '') -split ' ' | Where-Object { $_ })
+    if ($toks.Count -le 2) { return '' }
+    return (($toks[1..($toks.Count - 2)]) -join ' ').ToLowerInvariant()
+}
+
+# Middle names are not spelled consistently in the export, so one clinician can
+# arrive as two values and appear twice in the Provider filter. In V1.09 the
+# divide is perfectly along source-system lines: appointment rows carry the short
+# spelling, order rows (Diagnostic / Referral / Procedure / Immunization) carry
+# the full legal name. This builds an alias map collapsing such variants onto a
+# single published label.
+#
+# Keyed on the first+last token, lowercased. A one-row-at-a-time normalizer
+# cannot do this job: deciding which spelling to publish requires having seen
+# every row, so this runs as its own pass before the sanitize loop.
+#
+# The canonical label is the FEWEST-TOKEN spelling, NOT the most frequent one.
+# For two of the fourteen V1.09 pairs the long form is the more common, so
+# picking by count would publish some people with a middle initial and others
+# without - inconsistent in exactly the way this is meant to fix. Count only
+# breaks ties between two spellings of equal length.
+#
+# A key holding two DIFFERENT non-empty middle forms is deliberately left alone.
+# One person spelled two ways has at most one middle form plus a bare version;
+# two rival middle forms is far more likely two different clinicians who happen
+# to share a first and last name, and silently merging two people into one
+# filter entry is a worse failure than listing one person twice. Warns instead.
+#
+# The Easy/Hard roster match is NOT run against the canonical label - it keeps
+# using the raw value, for the reason given at $COL_PROVNAME above: the split
+# must not depend on the published label set. Safe here because the short
+# spelling is the one that appears on Appointment rows in the first place.
+function Get-ProviderAliasMap {
+    param([hashtable] $Counts)
+
+    $groups = @{}
+    foreach ($name in $Counts.Keys) {
+        if ($name -eq '(Blank)') { continue }
+        $toks = @((("$name") -replace '[.,]', '') -split ' ' | Where-Object { $_ })
+        # A single-token value has no middle name to drop and no surname to key
+        # on - practice-style names land here and are left exactly as they are.
+        if ($toks.Count -lt 2) { continue }
+        $key = ($toks[0] + '|' + $toks[-1]).ToLowerInvariant()
+        if (-not $groups.ContainsKey($key)) {
+            $groups[$key] = [System.Collections.Generic.List[string]]::new()
+        }
+        $groups[$key].Add($name)
+    }
+
+    $map       = @{}
+    $conflicts = [System.Collections.Generic.List[string]]::new()
+    foreach ($key in $groups.Keys) {
+        $variants = @($groups[$key])
+        if ($variants.Count -lt 2) { continue }
+
+        $middles = @($variants |
+            ForEach-Object { Get-ProviderMiddle -Name $_ } |
+            Where-Object { $_ } |
+            Select-Object -Unique)
+        if ($middles.Count -gt 1) { $conflicts.Add("middle:$key"); continue }
+
+        $canon = @($variants | Sort-Object `
+            @{ Expression = { @((("$_") -split ' ') | Where-Object { $_ }).Count } },
+            @{ Expression = { $Counts[$_] }; Descending = $true },
+            @{ Expression = { $_ } })[0]
+        foreach ($v in $variants) { if ($v -ne $canon) { $map[$v] = $canon } }
+    }
+
+    # ---- second stage: short-form first names ------------------------------
+    # The same clinician also turns up under a nickname - the short form on
+    # appointment rows, the full one on an order row, exactly the signature the
+    # middle-name pass fixes, but invisible to it because both spellings are two
+    # tokens. Matched only when one first name is a strict PREFIX of the other
+    # and the surname is identical, and the published label is the more frequent
+    # spelling (both are equally short, so token count cannot choose).
+    #
+    # This rule is less safe than the middle-name one and is deliberately kept
+    # separate so it can be switched off on its own. A prefix is weaker evidence
+    # than a middle initial: three names chaining off one prefix are more likely
+    # three colleagues than one person, so any surname group with more than two
+    # participants is refused outright. The residual risk is a pair like
+    # Ann/Anna - same surname, true prefix, two different people - which no
+    # guard here can detect. Every merge it makes is printed at build time for
+    # that reason; read those lines rather than trusting the rule.
+    $canonCounts = @{}
+    foreach ($name in $Counts.Keys) {
+        if ($name -eq '(Blank)') { continue }
+        $c = if ($map.ContainsKey($name)) { $map[$name] } else { $name }
+        if ($canonCounts.ContainsKey($c)) { $canonCounts[$c] += $Counts[$name] } else { $canonCounts[$c] = $Counts[$name] }
+    }
+
+    $bySurname = @{}
+    foreach ($name in $canonCounts.Keys) {
+        $toks = @((("$name") -replace '[.,]', '') -split ' ' | Where-Object { $_ })
+        if ($toks.Count -lt 2) { continue }
+        $sn = $toks[-1].ToLowerInvariant()
+        if (-not $bySurname.ContainsKey($sn)) {
+            $bySurname[$sn] = [System.Collections.Generic.List[string]]::new()
+        }
+        $bySurname[$sn].Add($name)
+    }
+
+    $nick = @{}
+    foreach ($sn in $bySurname.Keys) {
+        $labels = @($bySurname[$sn])
+        if ($labels.Count -lt 2) { continue }
+
+        # Everything in this surname group that participates in a prefix relation.
+        $involved = [System.Collections.Generic.List[string]]::new()
+        foreach ($a in $labels) {
+            $fa = (@((("$a") -replace '[.,]', '') -split ' ')[0]).ToLowerInvariant()
+            foreach ($b in $labels) {
+                if ($a -eq $b) { continue }
+                $fb = (@((("$b") -replace '[.,]', '') -split ' ')[0]).ToLowerInvariant()
+                if ($fa.Length -lt $fb.Length -and $fb.StartsWith($fa)) {
+                    if (-not $involved.Contains($a)) { $involved.Add($a) }
+                    if (-not $involved.Contains($b)) { $involved.Add($b) }
+                }
+            }
+        }
+        if ($involved.Count -eq 0) { continue }
+        if ($involved.Count -gt 2) { $conflicts.Add("prefix:$sn"); continue }
+
+        $canon = @($involved | Sort-Object `
+            @{ Expression = { $canonCounts[$_] }; Descending = $true },
+            @{ Expression = { $_ } })[0]
+        foreach ($v in $involved) { if ($v -ne $canon) { $nick[$v] = $canon } }
+    }
+
+    # Fold stage two into the map, re-pointing any stage-one entry whose target
+    # was itself just re-mapped, so no alias is left pointing at an alias.
+    foreach ($k in @($map.Keys)) {
+        if ($nick.ContainsKey($map[$k])) { $map[$k] = $nick[$map[$k]] }
+    }
+    foreach ($k in $nick.Keys) { $map[$k] = $nick[$k] }
+
+    return [pscustomobject]@{ Map = $map; Conflicts = $conflicts; Nicknames = $nick }
 }
 
 # Type arrives with inconsistent casing (Appointment / DIAGNOSTIC / REFERRAL / Procedure).
@@ -366,6 +552,45 @@ $patternHits = @{}
 foreach ($p in $hardPatterns) { $patternHits[$p] = 0 }
 $sanEasy = 0; $sanHard = 0; $sanNa = 0
 
+# One extra pass over the rows, before the sanitize loop, purely to tally the
+# distinct provider spellings so Get-ProviderAliasMap can pick a canonical label
+# for each person. It has to happen here: the sanitize loop overwrites
+# $COL_PROVIDER with the Easy/Hard verdict, after which the spellings are gone.
+$provAlias = @{}
+if ($hasProvider) {
+    $provNameCounts = @{}
+    foreach ($r in $rows) {
+        $dn = Normalize-Provider -Value "$($r.$COL_PROVIDER)"
+        if ($provNameCounts.ContainsKey($dn)) { $provNameCounts[$dn]++ } else { $provNameCounts[$dn] = 1 }
+    }
+    $aliasResult   = Get-ProviderAliasMap -Counts $provNameCounts
+    $provAlias     = $aliasResult.Map
+    $nickCount     = $aliasResult.Nicknames.Count
+    $distinctNamed = @($provNameCounts.Keys | Where-Object { $_ -ne '(Blank)' }).Count
+    Write-Host ("Provider names: {0} distinct spelling(s) -> {1} published label(s); {2} middle-name and {3} short-first-name variant(s) collapsed" -f `
+        $distinctNamed, ($distinctNamed - $provAlias.Count), ($provAlias.Count - $nickCount), $nickCount) -ForegroundColor DarkGray
+    # The nickname rule is the weaker of the two, so each merge it makes gets its
+    # own line. Initials only: this output gets pasted into README.md and into
+    # chat, and the line only has to be enough to find the pair in the source.
+    foreach ($k in $aliasResult.Nicknames.Keys) {
+        $ta = @((("$k") -replace '[.,]', '') -split ' ' | Where-Object { $_ })
+        Write-Host ("  short-first-name merge: {0}{1}, {2:N0} row(s), folded into the more frequent spelling of the same surname - verify this is one person, not two" -f `
+            $ta[0].Substring(0, 1).ToUpperInvariant(), $ta[-1].Substring(0, 1).ToUpperInvariant(),
+            $provNameCounts[$k]) -ForegroundColor DarkGray
+    }
+    foreach ($c in $aliasResult.Conflicts) {
+        $kind = ($c -split ':', 2)[0]
+        $key  = ($c -split ':', 2)[1]
+        if ($kind -eq 'middle') {
+            $ini = (($key -split '\|' | ForEach-Object { $_.Substring(0, 1).ToUpperInvariant() }) -join '')
+            Write-Host ("  NOT collapsed: one first+last name ({0}) carries two different middle names - check whether that is two people" -f $ini) -ForegroundColor Yellow
+        } else {
+            Write-Host ("  NOT collapsed: three or more first names share a prefix under one surname ({0}) - too likely to be colleagues, left separate" -f `
+                $key.Substring(0, 1).ToUpperInvariant()) -ForegroundColor Yellow
+        }
+    }
+}
+
 foreach ($r in $rows) {
     $rc = "$($r.$COL_RC)"
     if ($rc -imatch 'svc-quickbase')           { $r.$COL_RC = 'svc-quickbase'; $sanBot++ }
@@ -381,8 +606,12 @@ foreach ($r in $rows) {
         # The published name is captured BEFORE the verdict overwrites the column.
         # psnoteproperty rather than Add-Member: same result, and Add-Member's
         # per-call overhead is measurable across a six-figure row count.
-        $r.PSObject.Properties.Add(
-            [psnoteproperty]::new($COL_PROVNAME, (Normalize-Provider -Value "$($r.$COL_PROVIDER)")))
+        # Middle-name variants of one clinician collapse onto a single label here,
+        # so the Provider filter lists each person once. $provAlias is empty when
+        # no variants were found, which makes this a no-op.
+        $dispName = Normalize-Provider -Value "$($r.$COL_PROVIDER)"
+        if ($provAlias.ContainsKey($dispName)) { $dispName = $provAlias[$dispName] }
+        $r.PSObject.Properties.Add([psnoteproperty]::new($COL_PROVNAME, $dispName))
 
         $prov = Normalize-ProviderText -Value "$($r.$COL_PROVIDER)"
         if ($prov) { [void]$providerValues.Add($prov) }
@@ -416,8 +645,11 @@ Write-Host ("Sanitized: {0} fail reasons had names/identifiers redacted" -f $san
 if ($hasProvider) {
     # Says PUBLISHED, not discarded, because that is what changed in V1.09 and a
     # line that still read 'discarded' would be the most misleading output here.
+    # Reports the PUBLISHED label count, not $providerValues.Count: that set holds
+    # the raw spellings and is the repo gate's needle list, so it still counts the
+    # pre-collapse 91 and would overstate what the Provider filter actually lists.
     Write-Host ("Sanitized: Encounter Provider -> {0} hard / {1} easy / {2} n-a ({3} provider names PUBLISHED as the Provider dimension)" -f `
-        $sanHard, $sanEasy, $sanNa, $providerValues.Count) -ForegroundColor DarkGray
+        $sanHard, $sanEasy, $sanNa, ($distinctNamed - $provAlias.Count)) -ForegroundColor DarkGray
     if ($canSplit) {
         # Pattern index, not the pattern. Line up with providers.hard.txt to read it.
         $i = 0
@@ -450,6 +682,9 @@ if (-not $SkipSanitizedCsv) {
         $sanCols += @{ Name = 'Schedule Class'; Expression = { $_.$COL_PROVIDER } }
         $sanCols += $COL_PROVNAME
     }
+    # Carried through verbatim - it holds no identifiers, and it is the only way
+    # to re-sum the Pending Notes tiles by hand without reopening the raw export.
+    if ($hasPending) { $sanCols += $COL_PENDING }
     $rows |
         Select-Object $sanCols |
         Export-Csv -LiteralPath $sanPath -NoTypeInformation -Encoding utf8
@@ -479,18 +714,39 @@ function Resolve-Type {
     }
 }
 
+# Portal values that are two names for one portal. 'Curo' is the product and
+# 'Optum' its owner; work in either lands in the same place, so they publish as a
+# single label.
+#
+# This is an EXPLICIT table rather than a fuzzy rule like the provider collapse,
+# and the difference matters. Two spellings of a person's name look alike, so an
+# algorithm can find them. Nothing about the strings 'Curo' and 'Optum' says they
+# belong together - only someone who knows the payer landscape does. So a future
+# export inventing a third spelling will NOT be folded in automatically; it has
+# to be added here on purpose, and the console line below is what will tell you
+# a new unmerged value has shown up.
+#
+# Keys are lowercase and matched against the whitespace-collapsed value, so
+# casing drift in the export costs nothing.
+$PORTAL_ALIAS = @{
+    'curo'  = 'Optum Curo'
+    'optum' = 'Optum Curo'
+}
+
 # Portal names are payer/vendor brands (IEHP, EzNet, Medpoint), so they are NOT
 # title-cased the way Type is - that would turn IEHP into Iehp. Whitespace is
 # collapsed and casing is left exactly as the export wrote it.
 #
 # A blank portal is a real answer, not missing data: ~32% of rows are blank and
 # 24k of those are 'Auth Not Required', i.e. no portal was ever involved. Only 2
-# of ~19.5k RPA-touched rows are blank, so this bucket is almost entirely manual
-# work that needed no portal.
+# of ~19.5k rows attempted by RPA are blank, so this bucket is almost entirely
+# manual work that needed no portal.
 function Normalize-Portal {
     param([string] $Value)
     $v = (("$Value") -replace '\s+', ' ').Trim()
     if (-not $v) { return '(Blank)' }
+    $k = $v.ToLowerInvariant()
+    if ($PORTAL_ALIAS.ContainsKey($k)) { return $PORTAL_ALIAS[$k] }
     return $v
 }
 
@@ -500,6 +756,12 @@ function Normalize-Status {
     if (-not $v) { return '(Blank)' }
     switch -Regex ($v) {
         '^auth\s+approved$'     { return 'Auth Approved' }
+        # Arrived in the V1.11-era exports. It is its OWN outcome, not a variant
+        # of 'Auth Approved' - a partial approval means some requested units or
+        # services were granted and others were not, so folding it into approved
+        # would overstate approvals. Listed after the exact-approved rule purely
+        # for readability; '^auth\s+approved$' is anchored and cannot match it.
+        '^auth\s+partially\s+approved$' { return 'Auth Partially Approved' }
         '^auth\s+not\s+required$' { return 'Auth Not Required' }
         '^auth\s+blocked$'      { return 'Auth Blocked' }
         '^auth\s+denied$'       { return 'Auth Denied' }
@@ -587,11 +849,20 @@ function Normalize-Reason {
 
 # ---------------------------------------------------------------- aggregate
 # Bucket semantics (per the agreed overlap rule: bot failed then succeeded = success)
-#   0 bot_ok       : RC Assigned = svc-quickbase, no fail date   -> touched, success
-#   1 bot_retry_ok : RC Assigned = svc-quickbase, HAS fail date  -> touched, success (retried)
-#   2 bot_fail     : fail date, NOT svc-quickbase                -> touched, failure
-#   3 human        : neither                                     -> not touched
-$BUCKETS = @('bot_ok', 'bot_retry_ok', 'bot_fail', 'human')
+#   0 bot_ok       : RC Assigned = svc-quickbase, no fail date   -> attempted, submitted
+#   1 bot_retry_ok : RC Assigned = svc-quickbase, HAS fail date  -> attempted, submitted (retried)
+#   2 bot_fail     : fail date OR Worked-by-Automation-only      -> attempted, not submitted
+#   3 human        : none of the above                           -> not attempted
+#   4 (retired)    : was 'outcome not recorded'; folded into 2
+#
+# The fifth slot is kept in this array ON PURPOSE even though no fact can carry
+# a 4 any more. It documents the wire format, and copies of the previous
+# data.json still hold 4s - GitHub Pages serves the old file for up to ~10
+# minutes after a push, so a new index.html is guaranteed to meet one. index.html
+# therefore still reads slot 4 and adds it to FAIL, which is exactly what the
+# rule now says those rows are. Do not reuse index 4 for anything else: during
+# that stale window a new meaning would be applied to old rows.
+$BUCKETS = @('bot_ok', 'bot_retry_ok', 'bot_fail', 'human', '(retired)')
 
 $typeIdx   = [ordered]@{}
 $statusIdx = [ordered]@{}
@@ -603,8 +874,30 @@ $cells     = @{}
 
 $badDates = 0
 $futureDates = 0
+# Rows that reach 'attempted, not submitted' on the Worked by Automation flag
+# alone. Declared up front because Set-StrictMode makes ++ on an undeclared
+# variable a terminating error.
+$workedOnlyRows = 0
 $minDate = [datetime]::MaxValue
 $maxDate = [datetime]::MinValue
+
+# Pending-notes checks, summed per aggregate cell alongside $cells. Kept in a
+# parallel hashtable on the SAME key rather than widening $cells, so the count
+# and the sum cannot drift out of step and the existing cell logic is untouched.
+# Only non-zero cells get an entry - see the fact-tuple note below for why that
+# matters to the payload size.
+$pendCells    = @{}
+$pendTotal    = 0   # sum over every row carrying a value, including future-dated
+$pendRows     = 0   # rows contributing a non-zero value
+$pendBad      = 0   # non-numeric
+$pendNegative = 0   # parsed but below zero, which cannot be a re-check count
+# Checks found on rows the future-date guard removes from the counts. Held during
+# the loop and clamped onto the last day of data afterwards, so the published
+# total equals the raw column sum.
+$pendFuture      = [Collections.Generic.List[object]]::new()
+$pendClamped     = 0
+$pendClampedRows = 0
+$pendNewCells    = 0
 
 # A handful of rows carry a completion date past the day the export was pulled -
 # 23 of them in V1.05, the furthest five months out. They are data-entry noise,
@@ -620,20 +913,94 @@ function Get-Index {
     return $Map[$Key]
 }
 
+# Report the portal merge before aggregating, with raw row counts per spelling.
+# $PORTAL_ALIAS is hand-maintained, so the thing that rots is an alias key that
+# no longer matches anything in the export - a rename upstream would silently
+# un-merge the portal and the dashboard would just grow a filter entry. A key
+# matching 0 rows is called out loudly for exactly that reason. Portal values are
+# brand names, so unlike the provider lines these are safe to print in full.
+if ($hasPortal) {
+    $portalRaw = @{}
+    foreach ($r in $rows) {
+        $pv = (("$($r.$COL_PORTAL)") -replace '\s+', ' ').Trim()
+        if (-not $pv) { continue }
+        if ($portalRaw.ContainsKey($pv)) { $portalRaw[$pv]++ } else { $portalRaw[$pv] = 1 }
+    }
+    $merged = @($portalRaw.Keys | Where-Object { $PORTAL_ALIAS.ContainsKey($_.ToLowerInvariant()) })
+    $labels = @($portalRaw.Keys | ForEach-Object { Normalize-Portal -Value $_ } | Sort-Object -Unique)
+    Write-Host ("Portals        : {0} distinct value(s) -> {1} published label(s) plus (Blank)" -f `
+        $portalRaw.Count, $labels.Count) -ForegroundColor DarkGray
+    # Grouped by target, so the line stays correct if the table ever holds more
+    # than one merge.
+    foreach ($g in @($merged | Group-Object { $PORTAL_ALIAS[$_.ToLowerInvariant()] } | Sort-Object Name)) {
+        $parts = @($g.Group | Sort-Object | ForEach-Object { "{0} ({1:N0} rows)" -f $_, $portalRaw[$_] })
+        Write-Host ("  merged {0} -> '{1}'" -f ($parts -join ' + '), $g.Name) -ForegroundColor DarkGray
+    }
+    foreach ($k in $PORTAL_ALIAS.Keys) {
+        if (-not @($portalRaw.Keys | Where-Object { $_.ToLowerInvariant() -eq $k }).Count) {
+            Write-Host ("  WARNING: alias '{0}' matched no rows - renamed upstream? the merge is not happening" -f $k) -ForegroundColor Red
+        }
+    }
+}
+
 foreach ($r in $rows) {
     # --- date
     $raw = ("$($r.$COL_BASIS)").Trim()
     $dt = [datetime]::MinValue
     if (-not [datetime]::TryParse($raw, [ref]$dt)) { $badDates++; continue }
-    if ($dt.Date -gt $dateCeiling) { $futureDates++; continue }
+    if ($dt.Date -gt $dateCeiling) {
+        $futureDates++
+        # The authorization has not completed yet as far as this export knows, so
+        # it stays out of every COUNT - that part is unchanged. Its pending-notes
+        # checks are a different kind of fact: they have already happened, they
+        # are sitting in the file, and they are not a claim about a completion.
+        # So they are held here and re-attributed to the last day of data once the
+        # loop ends and maxDate is final. Dropping them made the tile disagree
+        # with the column it says it sums, which is the one thing it must not do.
+        if ($hasPending) {
+            $pRaw = ("$($r.$COL_PENDING)").Trim()
+            $pNum = 0
+            if ($pRaw -and [int]::TryParse($pRaw, [ref]$pNum) -and $pNum -gt 0) {
+                $pendFuture.Add([pscustomobject]@{ Row = $r; Checks = $pNum })
+            }
+        }
+        continue
+    }
     if ($dt -lt $minDate) { $minDate = $dt }
     if ($dt -gt $maxDate) { $maxDate = $dt }
     $dKey = $dt.ToString('yyyy-MM-dd')
 
     # --- buckets
+    #   0 OK      bot submitted it
+    #   1 RETRY   bot failed once, then submitted it         } all three count as
+    #   2 FAIL    bot tried and did not submit it            } ATTEMPTED
+    #   3 HUMAN   no bot involvement at all
+    #
+    # A row carrying ONLY the Worked by Automation flag - no bot assignment to
+    # read as a success, no fail date to read as a failure - lands in FAIL by
+    # business rule: the bot touched it and we are no longer assigned to it, so
+    # it was attempted and it was not submitted. That decision is the reason
+    # there is no fifth 'outcome unknown' bucket; bucket 4 was retired once the
+    # rule was settled. Nothing emits a 4 any more, and index.html folds any 4 it
+    # finds in a stale data.json into FAIL so the two agree during the ~10
+    # minutes Pages can serve the previous file.
+    #
+    # The flag is tested LAST on purpose. A row with a bot assignment or a fail
+    # date has a REAL outcome, and that outcome wins - putting this clause any
+    # earlier would strip known results off rows that have them, and in
+    # particular would book genuine successes as failures.
     $isBot  = ("$($r.$COL_RC)")    -imatch 'svc-quickbase'
     $hasFail= -not [string]::IsNullOrWhiteSpace("$($r.$COL_FDATE)")
-    $b = if ($isBot -and $hasFail) { 1 } elseif ($isBot) { 0 } elseif ($hasFail) { 2 } else { 3 }
+    $isWorked = $hasWorked -and (("$($r.$COL_WORKED)").Trim() -imatch '^(yes|y|true|1|checked)$')
+    $b = if ($isBot -and $hasFail) { 1 } elseif ($isBot) { 0 } elseif ($hasFail -or $isWorked) { 2 } else { 3 }
+
+    # Counted here rather than derived from the facts afterwards, because these
+    # rows are now indistinguishable from any other FAIL once aggregated. Worth
+    # keeping visible for two reasons: it is the only part of 'attempted, not
+    # submitted' that can grow because a column is filling in rather than
+    # because the bot ran and failed, and these rows carry NO fail reason, so
+    # they are invisible in the failure-reasons chart by design.
+    if (-not $isBot -and -not $hasFail -and $isWorked) { $workedOnlyRows++ }
 
     # --- reason only carries meaning when the bot actually failed
     $reason = $null
@@ -654,6 +1021,64 @@ foreach ($r in $rows) {
 
     $key = "$di|$ti|$si|$b|$ri|$pi|$vi"
     if ($cells.ContainsKey($key)) { $cells[$key]++ } else { $cells[$key] = 1 }
+
+    # --- pending-notes checks: SUMMED into the cell, not counted.
+    # Anything unparsable is treated as 0 rather than failing the build: this is
+    # a nice-to-have measure, and one malformed cell should not cost the whole
+    # dashboard. The count of rejects is reported so it cannot rot silently.
+    if ($hasPending) {
+        $pRaw = ("$($r.$COL_PENDING)").Trim()
+        if ($pRaw) {
+            $pNum = 0
+            if (-not [int]::TryParse($pRaw, [ref]$pNum)) {
+                $pendBad++
+            } elseif ($pNum -lt 0) {
+                $pendNegative++
+            } elseif ($pNum -gt 0) {
+                if ($pendCells.ContainsKey($key)) { $pendCells[$key] += $pNum } else { $pendCells[$key] = $pNum }
+                $pendTotal += $pNum
+                $pendRows++
+            }
+            # An explicit 0 is a valid answer that contributes nothing, so it is
+            # deliberately neither accumulated nor counted as malformed.
+        }
+    }
+}
+
+# --- clamp the held-back pending-notes checks onto the last day of data.
+# Deliberately NOT done inside the loop: the clamp target is $maxDate, which is
+# not final until every row has been read. $maxDate is by definition a date that
+# kept rows landed on, so this introduces no new date and cannot stretch the date
+# axis - which is the whole reason the future-date guard exists.
+#
+# These cells carry a COUNT OF ZERO. That is the point: the authorization is not
+# counted anywhere (no change to any headline figure, and the aggregated row
+# total still excludes it), while its checks are. The reason index is forced to
+# -1 because a failure reason describes a counted authorization and this cell
+# counts none - it also keeps the cell out of the failure-reason chart, which
+# builds its category list from the facts it is given rather than from a fixed
+# label set. Type and Status charts sum counts, so a zero adds nothing there.
+if ($pendFuture.Count) {
+    $cKey = $maxDate.ToString('yyyy-MM-dd')
+    $cdi  = Get-Index $dateIdx $cKey
+    foreach ($pf in $pendFuture) {
+        $r = $pf.Row
+        $isBot   = ("$($r.$COL_RC)") -imatch 'svc-quickbase'
+        $hasFail = -not [string]::IsNullOrWhiteSpace("$($r.$COL_FDATE)")
+        $b = if ($isBot -and $hasFail) { 1 } elseif ($isBot) { 0 } elseif ($hasFail) { 2 } else { 3 }
+        $ti = Get-Index $typeIdx   (Resolve-Type -Type "$($r.$COL_TYPE)" -Class $(if ($hasProvider) { "$($r.$COL_PROVIDER)" } else { '' }))
+        $si = Get-Index $statusIdx (Normalize-Status -Value "$($r.$COL_STATUS)")
+        $pi = if ($hasPortal)   { Get-Index $portalIdx (Normalize-Portal -Value "$($r.$COL_PORTAL)") } else { -1 }
+        $vi = if ($hasProvider) { Get-Index $provIdx "$($r.$COL_PROVNAME)" } else { -1 }
+
+        $key = "$cdi|$ti|$si|$b|-1|$pi|$vi"
+        if (-not $cells.ContainsKey($key)) { $cells[$key] = 0; $pendNewCells++ }
+        if ($pendCells.ContainsKey($key)) { $pendCells[$key] += $pf.Checks } else { $pendCells[$key] = $pf.Checks }
+        $pendTotal       += $pf.Checks
+        $pendRows++
+        $pendClamped     += $pf.Checks
+        $pendClampedRows++
+    }
 }
 
 $kept = $rows.Count - $badDates - $futureDates
@@ -661,6 +1086,40 @@ Write-Host "Date basis     : $COL_BASIS"
 Write-Host "Rows aggregated: $kept  (dropped for unparsable date: $badDates, dated after the $($dateCeiling.ToString('yyyy-MM-dd')) pull: $futureDates)"
 Write-Host "Distinct cells : $($cells.Count)"
 if ($kept -le 0) { throw "No rows had a parsable '$COL_BASIS'." }
+
+if ($hasPending) {
+    # The raw column is re-summed here, independently of the aggregation, and the
+    # two totals are asserted equal. This measure is concentrated in a handful of
+    # rows, so anything that quietly removed some of them would move the tile by a
+    # visible fraction - unlike a 115,000-row count, where the same loss is a
+    # rounding error. Anyone who has summed the column in Excel should get the
+    # number on the tile, and this line is what proves it on every refresh.
+    $pendRaw = 0
+    foreach ($r in $rows) {
+        $v = ("$($r.$COL_PENDING)").Trim()
+        if ($v) { $n = 0; if ([int]::TryParse($v, [ref]$n) -and $n -gt 0) { $pendRaw += $n } }
+    }
+    Write-Host ("Pending notes  : {0:N0} checks over {1:N0} row(s) = {2:N0} min ({3:N1} h) saved" -f `
+        $pendTotal, $pendRows, $pendTotal, ($pendTotal / 60)) -ForegroundColor DarkGray
+    if ($pendClamped) {
+        Write-Host ("  {0:N0} of those sit on {1:N0} row(s) not completed as of the pull; counted anyway, dated {2}" -f `
+            $pendClamped, $pendClampedRows, $maxDate.ToString('yyyy-MM-dd')) -ForegroundColor DarkGray
+        if ($pendNewCells) {
+            Write-Host ("  {0:N0} zero-count cell(s) added to carry them - they move no other figure" -f $pendNewCells) -ForegroundColor DarkGray
+        }
+    }
+    if ($pendRaw -ne $pendTotal) {
+        # Nothing should be able to cause this now that future-dated rows are
+        # clamped rather than dropped. If it fires, the tile is understating the
+        # column and the cause needs finding before publishing.
+        Write-Host ("  WARNING: raw column sums to {0:N0} but {1:N0} was published - {2:N0} unaccounted for" -f `
+            $pendRaw, $pendTotal, ($pendRaw - $pendTotal)) -ForegroundColor Red
+    } else {
+        Write-Host ("  matches the raw column sum of {0:N0} exactly" -f $pendRaw) -ForegroundColor DarkGray
+    }
+    if ($pendBad)      { Write-Host ("  {0:N0} non-numeric value(s) treated as 0" -f $pendBad) -ForegroundColor Yellow }
+    if ($pendNegative) { Write-Host ("  {0:N0} negative value(s) treated as 0 - a re-check count cannot be below zero" -f $pendNegative) -ForegroundColor Yellow }
+}
 
 # --- remap dimension indices to a stable, meaningful published order.
 # Dates MUST end up chronological: the client slices a date range by index.
@@ -682,7 +1141,10 @@ function Get-OrderedKeys {
 # an export without the provider column still produces it, and it has to sort
 # where it always did rather than falling to the bottom with the strays.
 $typeOrder   = Get-OrderedKeys $typeIdx   @('Easy Schedules', 'Hard Schedules', 'Appointment', 'Diagnostic', 'Procedure', 'Referral')
-$statusOrder = Get-OrderedKeys $statusIdx @('Auth Approved', 'Auth Not Required', 'Auth Denied', 'Auth Blocked')
+# 'Auth Partially Approved' sits next to 'Auth Approved' because that is where a
+# reader looks for it; without an entry here it falls to the bottom with the
+# unrecognized strays, which reads as a data problem rather than an outcome.
+$statusOrder = Get-OrderedKeys $statusIdx @('Auth Approved', 'Auth Partially Approved', 'Auth Not Required', 'Auth Denied', 'Auth Blocked')
 
 # Portals get no hand-written preferred list: the roster is the payer's to
 # change, and a new portal appearing in an export must sort somewhere sensible
@@ -705,7 +1167,7 @@ $statusRemap = @{}; for ($i = 0; $i -lt $statusOrder.Count; $i++) { $statusRemap
 $portalRemap = @{}; for ($i = 0; $i -lt $portalOrder.Count; $i++) { $portalRemap[$portalIdx[$portalOrder[$i]]] = $i }
 $provRemap = @{};   for ($i = 0; $i -lt $provOrder.Count;   $i++) { $provRemap[$provIdx[$provOrder[$i]]]     = $i }
 
-# Fact tuple: [date, type, status, bucket, reason, COUNT, portal, provider]
+# Fact tuple: [date, type, status, bucket, reason, COUNT, portal, provider, pending]
 #
 # The portal index is APPENDED AFTER the count rather than slotted in with the
 # other dimensions, which is the wrong shape semantically and deliberate anyway.
@@ -725,6 +1187,20 @@ $provRemap = @{};   for ($i = 0; $i -lt $provOrder.Count;   $i++) { $provRemap[$
 # the provider index would slide into the portal slot and be filtered as a
 # portal - a combination this clinic's exports have never produced, which is
 # precisely why it would go unnoticed.
+#
+# The pending-notes SUM joins at index 8 in V1.10 on the same reasoning, and the
+# placeholder rule now has to run one slot deeper: a pending sum is emitted only
+# behind both slot 6 and slot 7, so an export with pending notes but no provider
+# column writes -1 into slot 7 rather than letting a minute count be filtered as
+# a provider.
+#
+# Index 8 is also the first slot emitted PER CELL rather than per export: it is
+# written only where the sum is non-zero, leaving most tuples 8 long. That is
+# worth the raggedness - 16 of 50,000 cells carry a value in V1.10, and padding
+# the rest with a literal 0 would add ~100 KB of plaintext to a payload that
+# already strains the Notion embed. The client reads the slot as 0 when absent,
+# which is exactly what it must also do for a pre-V1.10 data.json, so the two
+# cases need no separate handling.
 $facts = [System.Collections.Generic.List[object]]::new()
 foreach ($k in $cells.Keys) {
     $p = $k -split '\|'
@@ -736,10 +1212,13 @@ foreach ($k in $cells.Keys) {
         [int]$p[4],
         $cells[$k]
     )
-    if ($hasPortal -or $hasProvider) {
+    if ($hasPortal -or $hasProvider -or $hasPending) {
         $row += $(if ($hasPortal) { $portalRemap[[int]$p[5]] } else { -1 })
     }
-    if ($hasProvider) { $row += $provRemap[[int]$p[6]] }
+    if ($hasProvider -or $hasPending) {
+        $row += $(if ($hasProvider) { $provRemap[[int]$p[6]] } else { -1 })
+    }
+    if ($hasPending -and $pendCells.ContainsKey($k)) { $row += $pendCells[$k] }
     $facts.Add($row)
 }
 # Sort by the remapped (chronological) date index.
@@ -767,6 +1246,12 @@ $payload = [ordered]@{
     # than categories - see the note on $COL_PROVIDER for why they ship.
     providers    = @(if ($hasProvider) { $provOrder } else { @() })
     reasons      = @($reasonIdx.Keys)
+    # An explicit flag, because unlike every dimension above this one cannot be
+    # inferred from the data. Pending-notes checks are so sparse that "no cell
+    # carries a value" is indistinguishable from "the column is not in this
+    # export", and those must render differently: a real 0 is a measurement the
+    # tiles should show, an absent column means hide the tiles entirely.
+    hasPending   = $hasPending
     facts        = $facts
 }
 
@@ -1038,25 +1523,45 @@ function Measure-Types {
     foreach ($f in $facts) {
         if ($idx -notcontains $f[1]) { continue }
         $m.total += $f[5]
-        switch ($f[3]) { 0 { $m.ok += $f[5] } 1 { $m.retry += $f[5] } 2 { $m.fail += $f[5] } }
+        # A 4 cannot occur in a fact this build produced, but it is still added to
+        # fail so that re-running these numbers against an archived data.json
+        # reports what the current rule says, not what the old one did.
+        switch ($f[3]) { 0 { $m.ok += $f[5] } 1 { $m.retry += $f[5] } 2 { $m.fail += $f[5] } 4 { $m.fail += $f[5] } }
     }
     return $m
 }
 
 $SCHED_TYPES = @('Easy Schedules', 'Hard Schedules', 'Appointment')
 $m = Measure-Types -Labels $SCHED_TYPES
-$touched = $m.ok + $m.retry + $m.fail
+# 'attempted' is the de-duplicated union of all three clauses, which is what
+# summing the buckets gives for free - a row lands in exactly one of them, so
+# the 512 rows holding both a bot assignment and a fail date cannot be counted
+# twice the way adding the two raw column counts would.
+$attempted = $m.ok + $m.retry + $m.fail
 $success = $m.ok + $m.retry
 
 Write-Host ""
 Write-Host ("=== Schedule Auth Metrics (all dates, {0}) ===" -f $(if ($canSplit) { 'Easy + Hard Schedules' } else { 'Type = Appointment' })) -ForegroundColor Cyan
-Write-Host ("  Total Schedule Auths            : {0:N0}" -f $m.total)
-Write-Host ("  Touched by RPA                  : {0:N0}" -f $touched)
-Write-Host ("  Percent Touched by RPA          : {0:N2}%" -f (100 * $touched / [math]::Max($m.total, 1)))
-Write-Host ("  RPA Success Rate                : {0:N2}%" -f (100 * $success / [math]::Max($touched, 1)))
-Write-Host ("    bot success            : {0:N0}" -f $m.ok)
-Write-Host ("    bot success after retry: {0:N0}" -f $m.retry)
-Write-Host ("    bot failed             : {0:N0}" -f $m.fail)
+Write-Host ("  Total Schedule Auths                   : {0:N0}" -f $m.total)
+Write-Host ("  Attempted to Submit by RPA             : {0:N0}" -f $attempted)
+Write-Host ("  Successfully Submitted by RPA          : {0:N0}" -f $success)
+Write-Host ("  Percent Attempted to Submit by RPA     : {0:N2}%" -f (100 * $attempted / [math]::Max($m.total, 1)))
+# The program's goal metric - submissions over ALL schedule auths, not over the
+# ones the bot reached. It is the product of the two ratios either side of it,
+# and the only one that moves on work the bot never touched, so it is printed
+# between them rather than derived by whoever is reading the other two.
+Write-Host ("  Pct of Total Successfully Submitted    : {0:N2}%" -f (100 * $success / [math]::Max($m.total, 1))) -ForegroundColor Cyan
+Write-Host ("  Success Rate of Auths Attempted by RPA : {0:N2}%" -f (100 * $success / [math]::Max($attempted, 1)))
+Write-Host ("    submitted                    : {0:N0}" -f $m.ok)
+Write-Host ("    submitted after a retry      : {0:N0}" -f $m.retry)
+Write-Host ("    attempted, not submitted     : {0:N0}" -f $m.fail)
+
+# Printed every build so the growth of the Worked by Automation clause stays
+# visible. These rows sit inside 'attempted, not submitted' and carry no fail
+# reason, so this is the only place they are countable. 19 rows in V1.10, 54 in
+# V1.11 - watch it, because it moves when the column fills in rather than when
+# the bot does more work.
+Write-Host ("  Of those, no fail reason - Worked by Automation only (all types): {0:N0}" -f $workedOnlyRows) -ForegroundColor DarkGray
 
 # The split is only worth having if the two halves behave differently, so print
 # them side by side - this is the line that tells you whether "hard" is real.
@@ -1066,7 +1571,7 @@ if ($canSplit) {
     foreach ($lbl in @('Easy Schedules', 'Hard Schedules')) {
         $s = Measure-Types -Labels @($lbl)
         $st = $s.ok + $s.retry + $s.fail
-        Write-Host ("  {0,-15}: {1,7:N0} auths | {2,6:N0} touched ({3,5:N2}%) | success {4,5:N2}%" -f `
+        Write-Host ("  {0,-15}: {1,7:N0} auths | {2,6:N0} attempted ({3,5:N2}%) | submitted {4,5:N2}%" -f `
             $lbl, $s.total, $st, (100 * $st / [math]::Max($s.total, 1)), (100 * ($s.ok + $s.retry) / [math]::Max($st, 1)))
     }
 }

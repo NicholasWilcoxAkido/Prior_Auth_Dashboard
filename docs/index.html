@@ -137,9 +137,11 @@ select, input[type="date"] {
 }
 .mspanel {
   display: none; position: absolute; z-index: 60; top: calc(100% + 4px); left: 0;
-  /* Tall enough that the 11-portal roster fits without scrolling, still bounded
-     so a future longer list cannot run off the bottom of the viewport. The
-     ~90-name provider roster does scroll, which is what the search box is for. */
+  /* Tall enough that the portal roster fits without scrolling - it has been
+     10-11 entries across exports and the merge in $PORTAL_ALIAS only shortens
+     it - still bounded so a future longer list cannot run off the bottom of the
+     viewport. The ~80-name provider roster does scroll, which is what the
+     search box is for. */
   /* Sized to the longest label rather than to the button. An absolutely
      positioned box shrink-to-fits within its containing block, which here is the
      button - so provider names, being far longer than any Type or Portal value,
@@ -177,8 +179,9 @@ select, input[type="date"] {
 .msdiv { height: 1px; background: var(--border); margin: 4px 2px; }
 
 /* "only" shortcut. A filter that opens with everything ticked would otherwise
-   need ten clicks to isolate one portal, which is the main thing anyone wants
-   to do with it. Revealed on row hover or keyboard focus - opacity rather than
+   need one click per other entry to isolate a single portal, which is the main
+   thing anyone wants to do with it. Revealed on row hover or keyboard focus -
+   opacity rather than
    visibility so it stays in the tab order, and the row highlight always arrives
    before a click can land on it. */
 .msrow { display: flex; align-items: center; gap: 4px; }
@@ -196,7 +199,28 @@ select, input[type="date"] {
 .range-note { font-size: 12px; color: var(--muted); }
 
 /* ---------------------------------------------------------------- KPI row */
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; margin-bottom: 7px; }
+/* An EXPLICIT column count, not auto-fit, and that is the whole point. With six
+   tiles, auto-fit picks whatever number fits and at ordinary desktop widths that
+   is five - which orphans the sixth tile alone on a second line, reading as a
+   rendering bug rather than as a layout. Every count below divides six exactly,
+   so the row can only ever break evenly. 3 x 2 also happens to group the tiles
+   the way they are meant to be read: three counts, then the three ratios
+   computed from them. Change the tile count and these numbers have to change
+   with it - that is the cost of not using auto-fit, and it is worth paying. */
+.kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 7px; }
+@media (max-width: 880px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .kpis { grid-template-columns: minmax(0, 1fr); } }
+/* Row two inherits row one's template verbatim, so the two rows line up for
+   free now that the count is explicit. The .tfill padding renderKPIs does is
+   still needed: without it the two pending-notes tiles stretch across all three
+   tracks instead of sitting under the first two. It pads to the RESOLVED track
+   count read at render time rather than to a number written down here, which is
+   what keeps it correct across the breakpoints above - at two columns the pad is
+   zero and at one column it is nothing either way.
+   margin-top completes the 12px the grid gap uses, on top of the 7px
+   margin-bottom row one already carries. */
+.kpis2 { margin-top: 5px; }
+.tfill { visibility: hidden; }
 .kpinote { font-size: 11.5px; color: var(--muted); margin: 0 0 18px; }
 .tile {
   background: var(--surface-1); border: 1px solid var(--border);
@@ -394,6 +418,11 @@ td:first-child { color: var(--ink); }
   </div>
 
   <div class="kpis" id="kpis"></div>
+  <!-- Second KPI row. Hidden until boot() sees hasPending, so a pre-V1.10
+       data.json shows the original four tiles rather than two reading 0. It sits
+       ABOVE the kpinote deliberately: that note names the active filter slice and
+       explains the deltas, and both apply to these tiles too. -->
+  <div class="kpis kpis2" id="kpis2" hidden></div>
   <p class="kpinote" id="kpinote"></p>
 
   <div class="card">
@@ -410,7 +439,7 @@ td:first-child { color: var(--ink); }
 
   <div class="card">
     <div class="chead">
-      <h2>Authorization Volume vs. Volume Touched by RPA</h2>
+      <h2>Authorization Volume vs. Volume Attempted to Submit by RPA</h2>
       <div class="spacer"></div>
       <button class="tbtn" data-table="trend" aria-pressed="false">Table</button>
     </div>
@@ -460,11 +489,15 @@ td:first-child { color: var(--ink); }
       <li><strong>Every date is the date the authorization was completed</strong> (<code>Date Auth Completed Roll Up</code>), not the date it was requested. So this dashboard measures <strong>throughput</strong> &mdash; what finished in the window. A request that arrived in August and finished in September counts in September.</li>
       <li><strong>Total Authorizations</strong> &mdash; authorizations <em>completed</em> in the selected window, matching the current Type, Status, Portal and Provider filters. Type is matched case-insensitively (the export mixes <code>Appointment</code> with <code>DIAGNOSTIC</code>).</li>
       <li><strong>Easy Schedules / Hard Schedules</strong> &mdash; the two halves of what used to be the single <code>Appointment</code> type. A scheduling authorization is a <strong>hard schedule</strong> when its <code>Encounter Provider</code> is on a fixed roster of providers whose appointments are known to be difficult to schedule, and an <strong>easy schedule</strong> otherwise. Together they are exactly the old <code>Appointment</code> total &mdash; nothing is added or dropped, and both are selected by default. The roster is not written down anywhere on this page, but it can be read off the Provider filter: pick one provider and see which half its appointments fall into.</li>
-      <li><strong>Portal</strong> &mdash; <code>Insurance Portal</code>, the payer portal the authorization was worked in. <code>(Blank)</code> is a real answer rather than missing data: it is mostly <code>Auth Not Required</code> work that never needed a portal, and it holds almost no RPA activity.</li>
+      <li><strong>Portal</strong> &mdash; <code>Insurance Portal</code>, the payer portal the authorization was worked in. <code>(Blank)</code> is a real answer rather than missing data: it is mostly <code>Auth Not Required</code> work that never needed a portal, and it holds almost no RPA activity. <code>Optum Curo</code> is one portal under two names in the export &mdash; <code>Curo</code> is the product and <code>Optum</code> its owner &mdash; so they are counted together here rather than split across two entries.</li>
       <li><strong>Provider</strong> &mdash; <code>Encounter Provider</code>, the provider on the encounter, scoping every figure on the page. <code>(Blank)</code> is again a real answer and roughly a quarter of all rows: those authorizations carry no encounter provider, which is why the filter opens with it included. Unlike every other filter here these are people's names, so treat the page accordingly &mdash; it is restricted for that reason among others.</li>
       <li><strong>N/A</strong> appears wherever a filter has <em>no</em> values ticked. That is a filter state, not a measurement: nothing has been asked about, so nothing is reported. A genuine zero &mdash; a window or a slice that really holds no authorizations &mdash; still shows as <code>0</code>.</li>
-      <li><strong>Touched by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code> <em>or</em> <code>Bot Run Fail Date</code> is populated. Rows with both are counted <strong>once</strong>.</li>
-      <li><strong>RPA Success Rate</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, over rows touched by RPA. A row with both a fail date and a bot assignment counts as a <em>success after retry</em>.</li>
+      <li><strong>Attempted to Submit by RPA</strong> &mdash; distinct rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>, <em>or</em> <code>Bot Run Fail Date</code> is populated, <em>or</em> <code>Worked by Automation</code> is checked. A row matching more than one of those is counted <strong>once</strong>, and the clauses are read in that order, so a real outcome always wins over the bare flag. This replaces the metric previously labelled &ldquo;Touched by RPA&rdquo;; the third clause is new, so this figure is slightly higher than the old one over the same window.</li>
+      <li><strong>Successfully Submitted by RPA</strong> &mdash; rows where <code>RC Assigned</code> contains <code>svc-quickbase</code>. These are the authorizations the bot actually got into the payer portal, and they include runs that <em>failed once and succeeded on retry</em>.</li>
+      <li><strong>Percent Attempted to Submit by RPA</strong> &mdash; Attempted to Submit by RPA over Total Authorizations. This is <em>coverage</em>: how much of the work the bot reached at all, which is a different question from how well it did once it got there.</li>
+      <li><strong>Percent of Total Authorizations Successfully Submitted by RPA</strong> &mdash; Successfully Submitted by RPA over Total Authorizations. The two ratios either side of this one multiply to it: <em>coverage</em> &times; <em>conversion</em>. It is the only one of the three that can move on work RPA never touched &mdash; close out a slice the bot does not reach and this falls even though neither of the others changed &mdash; which is what makes it the right number for a program-level target and the wrong one for judging the bot.</li>
+      <li><strong>Success Rate of Authorizations Attempted by RPA</strong> &mdash; Successfully Submitted by RPA over Attempted to Submit by RPA. A handoff to human review (<code>Routed to UM Workflow</code>), a referral that was already submitted, a prior authorization already on file, or a cancellation all count as attempts that did <strong>not</strong> end in a successful submission &mdash; the bot tried and the submission did not happen, whatever the cause.</li>
+      <li><strong>Attempted, Not Submitted</strong> &mdash; the rest of the attempts: rows with a <code>Bot Run Fail Date</code>, <em>and</em> rows carrying only the <code>Worked by Automation</code> flag. The second kind has no bot assignment to read as a success and no failure date to read as a failure, so it is counted the way the business rule reads it &mdash; automation worked it, we are no longer assigned to it, and it was not submitted. Those rows carry <strong>no failure reason</strong>, so they appear here and in the volume chart but never in the failure-reasons breakdown.</li>
       <li><strong>Date Presets</strong> are anchored to the latest date in the export, not to today, so a stale file still shows a populated window.</li>
       <li>Failure reasons are normalized into categories; member and authorization identifiers present in the raw text are stripped before publishing, and only aggregate counts are shipped.</li>
     </ul>
@@ -511,7 +544,14 @@ function schedTypes() {
   return SCHED_TYPES.filter(function (v) { return D.types.indexOf(v) >= 0; });
 }
 
-var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3 };
+/* ATTEMPT (4) is RETIRED and the build no longer emits it. The constant stays
+   because a stale data.json still holds 4s - Pages serves the previous file for
+   ~10 minutes after a push - and every read site folds slot 4 into FAIL, which
+   is what the business rule now says those rows are: worked by automation, no
+   bot assignment and no fail date, so attempted and not submitted. Do not reuse
+   index 4 for anything else; during that stale window the new meaning would be
+   applied to old rows. See the matching note in Build-Dashboard.ps1. */
+var BUCKET = { OK: 0, RETRY: 1, FAIL: 2, HUMAN: 3, ATTEMPT: 4 };
 
 var PRESETS = [
   { id: "14d", label: "14 Days", days: 14 },
@@ -724,18 +764,50 @@ function facts(from, to, ignore) {
   return out;
 }
 
-/* The four Schedule Auth metrics. One place, so every surface agrees. */
+/* Index 8 holds the pending-notes SUM and is the one slot that is optional per
+   fact rather than per export: the build omits it wherever the sum is zero, so
+   most tuples are 8 long. Reading it through this helper keeps the two places
+   that need it from each growing their own length check. Absent means 0, which
+   is also the right answer for a pre-V1.10 data.json. */
+var PEND = 8;
+function pend(f) { return f.length > PEND ? f[PEND] : 0; }
+
+/* The Schedule Auth metrics. One place, so every surface agrees. */
 function metrics(fs) {
-  var b = [0, 0, 0, 0];
-  for (var i = 0; i < fs.length; i++) { b[fs[i][3]] += fs[i][5]; }
-  var total = b[0] + b[1] + b[2] + b[3];
-  var touched = b[BUCKET.OK] + b[BUCKET.RETRY] + b[BUCKET.FAIL];
+  /* FIVE zeros, not four, even though the current build never emits a 4. Pages
+     serves the previous data.json for ~10 minutes after a push, and that file
+     DOES hold 4s. Size this to four and b[4] is undefined, which turns `total`
+     into NaN and takes the whole page down for exactly those minutes. */
+  var b = [0, 0, 0, 0, 0];
+  var pc = 0;
+  for (var i = 0; i < fs.length; i++) { b[fs[i][3]] += fs[i][5]; pc += pend(fs[i]); }
+  var total = b[0] + b[1] + b[2] + b[3] + b[4];
+  /* Slot 4 is the retired 'outcome not recorded' bucket, added to FAIL here
+     rather than ignored. Worked by Automation with no bot assignment and no
+     fail date now MEANS attempted-but-not-submitted, so a stale data.json's 4s
+     are counted under the rule that replaced them - the page reads the same
+     before and after the next push. Dropping them instead would break the
+     invariant below for those minutes. */
+  var fail = b[BUCKET.FAIL] + b[BUCKET.ATTEMPT];
+  /* total - touched === human is what keeps "Handled Manually" honest and stops
+     the volume chart plotting an attempted line above its own total on a shared
+     axis, so every bucket has to land in exactly one side of this. */
+  var touched = b[BUCKET.OK] + b[BUCKET.RETRY] + fail;
   var success = b[BUCKET.OK] + b[BUCKET.RETRY];
   return {
     total: total, touched: touched, success: success,
-    ok: b[BUCKET.OK], retry: b[BUCKET.RETRY], fail: b[BUCKET.FAIL], human: b[BUCKET.HUMAN],
+    ok: b[BUCKET.OK], retry: b[BUCKET.RETRY], fail: fail, human: b[BUCKET.HUMAN],
     pctTouched: total ? touched / total : null,
-    successRate: touched ? success / touched : null
+    /* The program's headline goal metric: submissions over ALL authorizations,
+       not over the ones the bot reached. pctTouched x successRate, and the only
+       one of the three ratios that can be moved by work the bot never touched -
+       which is exactly why it is reported separately from both of them. */
+    pctSubmitted: total ? success / total : null,
+    successRate: touched ? success / touched : null,
+    /* A SUM of a column, not a count of rows - the only measure here that is.
+       One check is defined as one minute saved, so this doubles as the minutes
+       figure and the two tiles cannot disagree. */
+    pendingChecks: pc
   };
 }
 
@@ -752,12 +824,18 @@ function timeBuckets(from, to, fs) {
   var span = Math.round((parseISO(to) - parseISO(from)) / 86400000) + 1;
   var weekly = span > 70;
   var map = {};
+  /* Kept parallel rather than as a fifth slot on map[key], because that array is
+     indexed by bucket and pending notes are not a bucket. */
+  var pmap = {};
   for (var i = 0; i < fs.length; i++) {
     var f = fs[i];
     var iso = D.dates[f[0]];
     var key = weekly ? isoWeekStart(iso) : iso;
-    if (!map[key]) map[key] = [0, 0, 0, 0];
+    /* Five slots, matching metrics() - slot 4 is the retired bucket, which only a
+       stale data.json can fill. A current build leaves it at 0. */
+    if (!map[key]) { map[key] = [0, 0, 0, 0, 0]; pmap[key] = 0; }
     map[key][f[3]] += f[5];
+    pmap[key] += pend(f);
   }
   var keys = Object.keys(map).sort();
 
@@ -807,13 +885,19 @@ function timeBuckets(from, to, fs) {
     partial: partial,
     rows: keys.map(function (k) {
       var b = map[k];
-      var total = b[0] + b[1] + b[2] + b[3];
-      var touched = b[0] + b[1] + b[2];
+      /* Same fold as metrics(): slot 4 joins fail, so it is in total AND in
+         touched and out of success. These per-period rows feed the trend charts,
+         so the shared-axis invariant (touched <= total) has to hold here too,
+         not just on the KPIs. */
+      var total = b[0] + b[1] + b[2] + b[3] + b[4];
+      var fail = b[2] + b[4];
+      var touched = b[0] + b[1] + fail;
       var success = b[0] + b[1];
       return {
-        key: k, label: shortDate(k), ok: b[0], retry: b[1], fail: b[2], human: b[3],
-        total: total, touched: touched,
+        key: k, label: shortDate(k), ok: b[0], retry: b[1], fail: fail, human: b[3],
+        total: total, touched: touched, pendingChecks: pmap[k],
         pctTouched: total ? touched / total : null,
+        pctSubmitted: total ? success / total : null,
         successRate: touched ? success / touched : null
       };
     })
@@ -1093,7 +1177,9 @@ function tile(spec) {
 
 function renderKPIs(m, prev, rows, priorRange) {
   var host = $("kpis");
+  var host2 = $("kpis2");
   clear(host);
+  clear(host2);
 
   /* With a dimension unticked there is no denominator to divide by and no
      numerator to report, so every tile reads N/A and the deltas, sub-counts and
@@ -1148,18 +1234,35 @@ function renderKPIs(m, prev, rows, priorRange) {
   var dTotal = prev && !blank ? cntDelta(m.total, prev.total, false) : null;
   var dTouch = prev && !blank ? cntDelta(m.touched, prev.touched, true) : null;
   var dPct = prev && !blank ? ppDelta(m.pctTouched, prev.pctTouched) : null;
+  var dPctSub = prev && !blank ? ppDelta(m.pctSubmitted, prev.pctSubmitted) : null;
   var dSucc = prev && !blank ? ppDelta(m.successRate, prev.successRate) : null;
+  /* A count delta, not the pp delta above it: the new tile prints a row count,
+     and more successful submissions is good news, so goodUp is true. */
+  var dSuccCnt = prev && !blank ? cntDelta(m.success, prev.success, true) : null;
+  var dPend = prev && !blank ? cntDelta(m.pendingChecks, prev.pendingChecks, true) : null;
 
-  /* One gate for all four tiles. Passing the spec through here rather than
+  /* Minutes as hours-and-minutes. One check is one minute, so the input is
+     already the minute count. The parts drop out when they are zero so the
+     common small cases read "7m" and "2h" rather than "0h 7m" and "2h 0m";
+     nothing at all would be ambiguous, so a flat zero keeps its unit. */
+  function hm(mins) {
+    var h = Math.floor(mins / 60), r = mins % 60;
+    if (!h) return r + "m";
+    return r ? h + "h " + r + "m" : h + "h";
+  }
+
+  /* One gate for all seven tiles. Passing the spec through here rather than
      branching at each call site is what stops a later tile being added with the
      blank case forgotten - the tile that still printed "0 of 0" would be the
-     one anybody believed. */
-  function kpi(spec) {
+     one anybody believed. (That is not hypothetical: "Successfully Submitted by
+     RPA" was added through this gate and inherited the N/A behaviour for free.)
+     `where` defaults to row one so the row-one calls below need not pass it. */
+  function kpi(spec, where) {
     if (blank) {
       spec.value = "N/A";
       spec.delta = null; spec.deltaDir = 0; spec.denom = null; spec.spark = null;
     }
-    host.appendChild(tile(spec));
+    (where || host).appendChild(tile(spec));
   }
 
   kpi({
@@ -1170,31 +1273,92 @@ function renderKPIs(m, prev, rows, priorRange) {
     spark: sparkline(rows, function (r) { return r.total; }, c1)
   });
   kpi({
-    label: "Touched by RPA",
+    label: "Attempted to Submit by RPA",
     value: fmt(m.touched),
     delta: dTouch && dTouch.text, deltaDir: dTouch ? dTouch.dir : 0,
-    denom: fmt(m.success) + " succeeded · " + fmt(m.fail) + " failed",
+    /* Two parts, and they have to add up to the value above them. Rows worked by
+       automation with no recorded outcome are inside "not submitted" by business
+       rule, not a third part. */
+    denom: fmt(m.success) + " submitted · " + fmt(m.fail) + " not submitted",
     spark: sparkline(rows, function (r) { return r.touched; }, c1)
   });
   kpi({
-    label: "Percent Touched by RPA",
+    label: "Successfully Submitted by RPA",
+    value: fmt(m.success),
+    delta: dSuccCnt && dSuccCnt.text, deltaDir: dSuccCnt ? dSuccCnt.dir : 0,
+    denom: fmt(m.ok) + " first try · " + fmt(m.retry) + " after a retry",
+    spark: sparkline(rows, function (r) { return r.ok + r.retry; }, c1)
+  });
+  kpi({
+    label: "Percent Attempted to Submit by RPA",
     value: pct(m.pctTouched),
     delta: dPct && dPct.text, deltaDir: dPct ? dPct.dir : 0,
     denom: fmt(m.touched) + " of " + fmt(m.total),
     spark: sparkline(rows, function (r) { return r.pctTouched; }, c1)
   });
+  /* Sits between the two ratios it is the product of, because that is the only
+     place it reads as a funnel rather than as a rival to either: coverage
+     (attempted / total) x conversion (submitted / attempted) = this.
+     The label does NOT interpolate `noun` even though its denominator is the
+     hero tile's value. Only the hero names the slice; every other tile here
+     leaves scope to it and to the note under the row, and spelling it out would
+     push this already-long label to a third wrapped line. */
   kpi({
-    label: "RPA Success Rate",
+    label: "Percent of Total Authorizations Successfully Submitted by RPA",
+    value: pct(m.pctSubmitted),
+    delta: dPctSub && dPctSub.text, deltaDir: dPctSub ? dPctSub.dir : 0,
+    denom: fmt(m.success) + " of " + fmt(m.total),
+    spark: sparkline(rows, function (r) { return r.pctSubmitted; }, c1)
+  });
+  kpi({
+    label: "Success Rate of Authorizations Attempted by RPA",
     value: pct(m.successRate),
     delta: dSucc && dSucc.text, deltaDir: dSucc ? dSucc.dir : 0,
-    denom: fmt(m.success) + " of " + fmt(m.touched) + " touched",
+    denom: fmt(m.success) + " of " + fmt(m.touched) + " attempted",
     spark: sparkline(rows, function (r) { return r.successRate; }, c2)
   });
+
+  /* Row two. Skipped entirely when the export has no pending-notes column, so an
+     older data.json shows the four tiles above and nothing else - two tiles
+     reading 0 would be a claim the data cannot support. Both read the same
+     number: one check is one minute, so these are one measure in two units, and
+     the second tile names the rule rather than leaving it to be guessed. */
+  if (D.hasPending) {
+    kpi({
+      label: "Pending Notes Checked",
+      value: fmt(m.pendingChecks),
+      delta: dPend && dPend.text, deltaDir: dPend ? dPend.dir : 0,
+      spark: sparkline(rows, function (r) { return r.pendingChecks; }, c1)
+    }, host2);
+    kpi({
+      label: "Time Saved Checking Pending Notes",
+      value: hm(m.pendingChecks),
+      denom: "1 minute per check · " + fmt(m.pendingChecks) + " min"
+    }, host2);
+    /* Pad with spacers so this grid resolves to the same track count as the row
+       above it - see the .kpis2 comment. Pad to row one's RESOLVED track count,
+       not to its tile count: at a width where row one has wrapped to three
+       columns, a fourth spacer would orphan onto a line of its own and show as a
+       stray gap under row two. Reading the resolved template costs one layout
+       flush per render and is the only way to know that number without
+       duplicating row one's breakpoints here. A browser that reports no tracks
+       falls back to the tile count. aria-hidden because a screen reader reading
+       empty cells is worse than silence. */
+    var tracks = getComputedStyle(host).gridTemplateColumns.split(" ")
+      .filter(function (w) { return parseFloat(w) > 0; }).length;
+    if (!tracks) { tracks = host.childNodes.length; }
+    while (host2.childNodes.length < tracks) {
+      var fill = document.createElement("div");
+      fill.className = "tfill";
+      fill.setAttribute("aria-hidden", "true");
+      host2.appendChild(fill);
+    }
+  }
 }
 
 /* ====================================================================== trend (two counts, one axis)
    Both series are counts of authorizations, so a single shared y-axis is correct
-   here - no second scale, nothing to rig. Touched is a strict SUBSET of total,
+   here - no second scale, nothing to rig. Attempted is a strict SUBSET of total,
    which is the whole reason this reads well as one chart: the filled band is
    RPA's share and the space above it, up to the total line, is the manual
    remainder. The vertical gap between the lines IS the backlog. */
@@ -1202,7 +1366,7 @@ function renderTrend(tb) {
   var svg = $("trendChart");
   var rows = tb.rows;
   $("trendSub").textContent = (tb.weekly ? "Weekly" : "Daily")
-    + " counts on one shared axis. Touched is a subset of total, so the gap between the lines is the volume handled manually."
+    + " counts on one shared axis. Attempted is a subset of total, so the gap between the lines is the volume handled manually."
     + (tb.weekly ? " Buckets are ISO weeks (Monday start) because the range exceeds 70 days." : "")
     + partialNote(tb.partial, tb.weekly);
 
@@ -1211,15 +1375,15 @@ function renderTrend(tb) {
   var cTot = cssVar("--ink-2"), cTch = cssVar("--series-1");
   legend($("trendLegend"), [
     { name: "Total Authorization Volume", color: cTot, line: true },
-    { name: "Total Touched by RPA", color: cTch, line: true }
+    { name: "Total Attempted to Submit by RPA", color: cTch, line: true }
   ]);
   /* The rates stay in the table: taking them off the plot shouldn't delete the
      numbers from the page. */
   TABLES.trend = function () {
     renderTable($("trendTable"),
-      [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Touched by RPA", "Handled Manually", "% Touched", "Success Rate"],
+      [tb.weekly ? "Week Of" : "Date", "Total Authorizations", "Attempted by RPA", "Handled Manually", "% Attempted", "% Submitted", "Success Rate"],
       rows.map(function (r, i) {
-        return [bucketLabel(tb, rows, i), fmt(r.total), fmt(r.touched), fmt(r.total - r.touched), pct(r.pctTouched), pct(r.successRate)];
+        return [bucketLabel(tb, rows, i), fmt(r.total), fmt(r.touched), fmt(r.total - r.touched), pct(r.pctTouched), pct(r.pctSubmitted), pct(r.successRate)];
       }));
   };
   TABLES.trend();
@@ -1231,7 +1395,7 @@ function renderTrend(tb) {
   var W = 980, H = 300, m = { t: 16, r: 62, b: 34, l: 56 };
   var pw = W - m.l - m.r, ph = H - m.t - m.b;
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-  svg.setAttribute("aria-label", "Line chart of total authorization volume and the subset touched by RPA, per period");
+  svg.setAttribute("aria-label", "Line chart of total authorization volume and the subset attempted to submit by RPA, per period");
   if (S.tex) texDefs(svg, [cTch]);
 
   var X = function (i) { return m.l + (i / (rows.length - 1)) * pw; };
@@ -1272,7 +1436,7 @@ function renderTrend(tb) {
   var lastI = rows.length - 1;
   var dTot = linePath("total", 0, lastI), dTch = linePath("touched", 0, lastI);
 
-  /* Touched is filled to the baseline so the band reads as "RPA's share of the
+  /* Attempted is filled to the baseline so the band reads as "RPA's share of the
      work". Total gets no fill - a second fill would overlap this one and turn
      the part-of-whole relationship into mud. */
   svg.appendChild(sv("path", {
@@ -1346,10 +1510,11 @@ function renderTrend(tb) {
     dotC.setAttribute("cx", X(i)); dotC.setAttribute("cy", Y(r.touched)); dotC.setAttribute("opacity", 1);
     var tr = [
       { name: "Total Authorization Volume", value: fmt(r.total), color: cTot },
-      { name: "Total Touched by RPA", value: fmt(r.touched), color: cTch },
+      { name: "Total Attempted to Submit by RPA", value: fmt(r.touched), color: cTch },
       { name: "Handled Manually", value: fmt(r.total - r.touched), color: null },
-      { name: "Percent Touched by RPA", value: pct(r.pctTouched), color: null },
-      { name: "RPA Success Rate", value: pct(r.successRate), color: null }
+      { name: "Percent Attempted to Submit by RPA", value: pct(r.pctTouched), color: null },
+      { name: "Percent of Total Successfully Submitted by RPA", value: pct(r.pctSubmitted), color: null },
+      { name: "Success Rate of Authorizations Attempted by RPA", value: pct(r.successRate), color: null }
     ];
     /* Hovering is how people read the exact number, so the caveat has to be here
        too - not only in the subtitle they may have scrolled past. */
@@ -1370,19 +1535,25 @@ function renderVolume(tb) {
   var svg = $("volChart");
   var rows = tb.rows;
   $("volSub").textContent = (tb.weekly ? "Weekly" : "Daily") + " counts, stacked to the period total."
-    + " Bot successes include runs that failed once and succeeded on retry."
+    + " Submissions include runs that failed once and succeeded on retry."
     + partialNote(tb.partial, tb.weekly);
 
+  /* THREE series, slots 1-3 of the documented palette (blue / orange / aqua).
+     A fourth yellow slot was carried here briefly for the retired
+     'outcome not recorded' bucket and came back out with it, which also removed
+     the adjacency constraint that forced aqua to sit between orange and yellow -
+     yellow against orange fails both the normal-vision and CVD floors. Re-run
+     the validator before adding any fourth segment back. */
   var cols = [cssVar("--series-1"), cssVar("--series-2"), cssVar("--series-3")];
   legend($("volLegend"), [
-    { name: "RPA Succeeded", color: S.tex ? cols[0] : cols[0] },
-    { name: "RPA Failed", color: cols[1] },
+    { name: "Submitted by RPA", color: cols[0] },
+    { name: "Attempted, Not Submitted", color: cols[1] },
     { name: "Handled Manually", color: cols[2] }
   ]);
 
   TABLES.vol = function () {
     renderTable($("volTable"),
-      [tb.weekly ? "Week Of" : "Date", "RPA Succeeded", "Of Which Retried", "RPA Failed", "Manual", "Total"],
+      [tb.weekly ? "Week Of" : "Date", "Submitted by RPA", "Of Which Retried", "Attempted, Not Submitted", "Manual", "Total"],
       rows.map(function (r, i) { return [bucketLabel(tb, rows, i), fmt(r.ok + r.retry), fmt(r.retry), fmt(r.fail), fmt(r.human), fmt(r.total)]; }));
   };
   TABLES.vol();
@@ -1427,6 +1598,8 @@ function renderVolume(tb) {
   rows.forEach(function (r, i) {
     var cx = m.l + band * i + band / 2;
     var x = cx - bw / 2;
+    /* The .filter means a zero segment drops out entirely rather than painting a
+       1px sliver of a colour the period does not have. */
     var segs = [
       { v: r.ok + r.retry, ci: 0 },
       { v: r.fail, ci: 1 },
@@ -1454,15 +1627,16 @@ function renderVolume(tb) {
     var hit = sv("rect", { x: (cx - band / 2).toFixed(1), y: m.t, width: Math.max(band, 1).toFixed(1), height: ph, fill: "transparent" });
     hit.setAttribute("tabindex", "0");
     hit.setAttribute("role", "img");
-    hit.setAttribute("aria-label", bucketLabel(tb, rows, i) + ": " + (r.ok + r.retry) + " RPA succeeded, " + r.fail + " RPA failed, " + r.human + " manual");
+    hit.setAttribute("aria-label", bucketLabel(tb, rows, i) + ": " + (r.ok + r.retry) + " submitted by RPA, "
+      + r.fail + " attempted but not submitted, " + r.human + " handled manually");
     function show(ev) {
       var e = ev.clientX ? ev : (function () { var b = hit.getBoundingClientRect(); return { clientX: b.left + b.width / 2, clientY: b.top + 20 }; })();
       var tr = [
-        { name: "RPA Succeeded", value: fmt(r.ok + r.retry), color: cols[0] },
-        { name: "RPA Failed", value: fmt(r.fail), color: cols[1] },
-        { name: "Handled Manually", value: fmt(r.human), color: cols[2] },
-        { name: "Total", value: fmt(r.total), color: null }
+        { name: "Submitted by RPA", value: fmt(r.ok + r.retry), color: cols[0] },
+        { name: "Attempted, Not Submitted", value: fmt(r.fail), color: cols[1] },
+        { name: "Handled Manually", value: fmt(r.human), color: cols[2] }
       ];
+      tr.push({ name: "Total", value: fmt(r.total), color: null });
       var pr = partialTipRow(tb, rows, i);
       if (pr) { tr.push(pr); }
       tipShow(e, (tb.weekly ? "Week of " : "") + longDate(r.key), tr);
@@ -1855,6 +2029,14 @@ function boot(data) {
   D.portals = D.portals || [];
   /* Same for PROVIDER, absent before V1.09. */
   D.providers = D.providers || [];
+  /* Absent before V1.10. This one has to be a flag from the build rather than
+     something derived from the facts, because "the column exists and every cell
+     is zero" and "the column is not in the export" look identical from here, and
+     they are not the same statement. */
+  D.hasPending = !!D.hasPending;
+  /* The second KPI row is hidden in the markup and opened here, so a pre-V1.10
+     payload leaves no empty grid row behind the first four tiles. */
+  if (D.hasPending) { $("kpis2").hidden = false; }
 
   var gen = new Date(D.generatedUtc);
   /* "Completions through", not "Data through" - the dashboard buckets on the
@@ -1914,7 +2096,15 @@ function boot(data) {
   if (qt) S.types = qt;
   var qs = parseSel(q.get("status"), D.statuses);
   if (qs) S.statuses = qs;
-  var qpo = parseSel(q.get("portal"), D.portals);
+  /* 'Curo' and 'Optum' stopped being labels when the build started publishing
+     them as one 'Optum Curo'. Same situation as ?type=appointment above: a URL
+     someone already has would match no label and parseSel would hand back null,
+     which the caller reads as "no portal requested" and quietly shows ALL
+     portals - the one failure mode worth avoiding, because the page looks fine
+     and the filter is simply wrong. Mapping both old spellings onto the merged
+     label keeps those links meaning what they meant. */
+  var PORTAL_ALIAS = { "curo": ["Optum Curo"], "optum": ["Optum Curo"] };
+  var qpo = parseSel(q.get("portal"), D.portals, PORTAL_ALIAS);
   if (qpo) S.portals = qpo;
   var qpr = parseSel(q.get("provider"), D.providers);
   if (qpr) S.providers = qpr;
