@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# DO NOT COMMIT SOURCE EXPORTS.
+#
+# The raw Orders_and_Appointments export carries member IDs and authorization
+# numbers inside the "Bot Run Fail Reason" text. This repository is public, so
+# committing one would publish HIPAA identifiers irreversibly (crawlers and
+# caches retain content even after a force-push or repo deletion).
+#
+# Only docs/data.json is publishable: it holds pre-aggregated counts with the
+# identifiers stripped. Build it with Build-Dashboard.ps1.
+# ---------------------------------------------------------------------------
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+
+# Sanitized row-level copies. Safe by construction, but they are still
+# row-level data and there is no reason to publish them - the dashboard is
+# driven entirely by docs/data.json. (Also matched by *.csv above; listed
+# explicitly so the intent survives a future change to that rule.)
+sanitized/
+
+# The hard-schedule provider roster. Real provider names, same PPI class as the
+# coordinator names the build discards at ingest - and this repo is public. The
+# build reads it to label Appointment rows "Easy"/"Hard" and publishes only those
+# two words, so the roster itself never needs to leave this machine.
+providers.hard.txt
+
+# The dashboard passphrase. This is the key that decrypts docs/data.json, so
+# committing it to a public repo would publish the lock and the key together and
+# undo the whole access gate. Same sidecar pattern as providers.hard.txt: the
+# build reads it, the published output only ever carries ciphertext derived from
+# it. Rotating it means editing this file and re-running the build.
+dashboard.passphrase.txt
+
+# Single-file dashboards from Build-Standalone.ps1. These carry the aggregates
+# INLINE AND IN PLAINTEXT, with no passphrase prompt, because they are built to
+# be opened from disk where there is no server to fetch data.json. That makes
+# them the one generated artifact that must never be committed: pushing one here
+# would publish every figure in it to a public URL and reduce the access gate on
+# docs/data.json to decoration. Share them through a channel that already
+# controls access instead.
+standalone/
+
+# Local scratch
+_upload/
+_shots/
+_dashboard_build/
+_installers/
+*.log
+*.tmp
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Explicitly re-allow the only generated data file that is safe to publish.
+!docs/data.json

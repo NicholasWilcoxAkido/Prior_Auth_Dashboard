@@ -972,6 +972,18 @@ range ending earlier won't see them. On every built-in preset they are included.
   ticked is usually what you want. Note that a provider's rows are spread across
   *all* Types, not just the two schedule types: with the default Type filter a
   referral-only provider shows `0`.
+- **"Authorizations by Provider: Automated vs. Manual"** sits under the volume
+  chart: one row per provider with Total, Submitted by RPA, Attempted Not
+  Submitted, Handled Manually, % Manual, % Submitted, Success Rate, and a mix bar
+  in the same three colours as the volume chart. It is scoped by **every** filter,
+  Provider included, so unticking a provider removes their row. Click a header to
+  sort (default: Handled Manually, descending). Providers under 20 authorizations
+  are hidden behind a *Show all* button because their percentages swing on a few
+  rows; the **All providers** footer always sums every provider in scope, hidden
+  ones included, so it equals the KPI tiles. `(Blank)` is pinned last. The small
+  *Easy*/*Hard* tag is read with the Type filter off, so it stays put when you
+  tick only Referral. Hidden on an export with no `Encounter Provider` column.
+  It needs nothing new in `data.json`, so it appears with a new `index.html` alone.
 - **The second KPI row counts pending-note checks, not authorizations.** It is
   the one place on the page that sums a column instead of counting rows, and it
   appears only on exports from **V1.10** on — older ones hide the row rather than
